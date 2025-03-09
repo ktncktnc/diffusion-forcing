@@ -1,29 +1,28 @@
 import numpy as np
 from einops import rearrange
 import torch
+from omegaconf import DictConfig
 
 from .df_base import RNN_DiffusionForcingBase
-
 from algorithms.common.metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,
+    FrechetVideoDistance,
 )
-
 from utils.logging_utils import log_video, get_validation_metrics_for_videos
 
 
 class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
+    def __init__(self, cfg: DictConfig):
+        self.metrics = cfg.metrics
+        super().__init__(cfg)
+
     def _build_model(self):
         super()._build_model()
 
-        if self.cfg.compute_fid_lpips:
-            self.validation_fid_model = FrechetInceptionDistance(feature=64)
-            self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity()
-        else:
-            self.validation_fid_model = None
-            self.validation_lpips_model = None
-
-        self.validation_fvd_model = None  # FrechetVideoDistance()
+        self.validation_fid_model = FrechetInceptionDistance(feature=64) if "fid" in self.metrics else None
+        self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity() if "lpips" in self.metrics else None
+        self.validation_fvd_model = [FrechetVideoDistance()] if "fvd" in self.metrics else None
 
     def training_step(self, batch, batch_idx):
         # if batch_idx == 0:
@@ -67,7 +66,7 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
             xs[self.context_frames :],
             lpips_model=self.validation_lpips_model,
             fid_model=self.validation_fid_model,
-            fvd_model=self.validation_fvd_model,
+            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
         )
         self.log_dict(
             {f"{namespace}/{k}": v for k, v in metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True

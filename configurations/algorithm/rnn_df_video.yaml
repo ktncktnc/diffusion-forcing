@@ -24,3 +24,5 @@ diffusion:
   cum_snr_decay: 0.8 # 0.8 for dmlab, 0.96 for minecraft
   clip_noise: 6 # helps numerical stablity when using fp16
   
+metrics:
+  - fvd
