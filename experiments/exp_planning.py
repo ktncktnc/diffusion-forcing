@@ -1,5 +1,6 @@
 from datasets import Maze2dOfflineRLDataset
 from algorithms.diffusion_forcing import DiffusionForcingPlanning
+from algorithms.rnn_diffusion_forcing import RNN_DiffusionForcingPlanning
 from .exp_base import BaseLightningExperiment
 
 
@@ -10,6 +11,7 @@ class PlanningExperiment(BaseLightningExperiment):
 
     compatible_algorithms = dict(
         df_planning=DiffusionForcingPlanning,
+        rnn_df_planning=RNN_DiffusionForcingPlanning
     )
 
     compatible_datasets = dict(

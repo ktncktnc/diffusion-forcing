@@ -3,6 +3,7 @@ from datasets.video import (
     DmlabVideoDataset,
 )
 from algorithms.diffusion_forcing import DiffusionForcingVideo
+from algorithms.rnn_diffusion_forcing import RNN_DiffusionForcingVideo
 from .exp_base import BaseLightningExperiment
 
 
@@ -13,6 +14,7 @@ class VideoPredictionExperiment(BaseLightningExperiment):
 
     compatible_algorithms = dict(
         df_video=DiffusionForcingVideo,
+        rnn_df_video=RNN_DiffusionForcingVideo,
     )
 
     compatible_datasets = dict(

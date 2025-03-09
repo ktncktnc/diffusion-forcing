@@ -17,7 +17,7 @@ from lightning.pytorch.strategies.ddp import DDPStrategy
 import lightning.pytorch as pl
 from lightning.pytorch.loggers.wandb import WandbLogger
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
-from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, TQDMProgressBar
 
 from omegaconf import DictConfig
 
@@ -176,6 +176,7 @@ class BaseLightningExperiment(BaseExperiment):
                     **self.cfg.training.checkpointing,
                 )
             )
+        callbacks.append(TQDMProgressBar(refresh_rate=100))
 
         trainer = pl.Trainer(
             accelerator="auto",

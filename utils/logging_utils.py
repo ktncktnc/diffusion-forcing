@@ -137,6 +137,30 @@ def is_grid_env(env_id):
     return "maze2d" in env_id or "diagonal2d" in env_id
 
 
+def get_validation_metrics_for_states(observation_hat, observation_gt):
+    """
+    :param observation_hat: predicted observation tensor of shape (frame, batch, channel)
+    :param observation_gt: ground-truth observation tensor of shape (frame, batch, channel)
+    :return: a tuple of metrics
+    """
+    frame, batch, channel = observation_hat.shape
+
+    # reshape to (frame * batch, channel)
+    observation_hat = observation_hat.reshape(-1, channel)
+    observation_gt = observation_gt.reshape(-1, channel)
+
+    mse = mean_squared_error(observation_hat, observation_gt)
+    psnr = peak_signal_noise_ratio(observation_hat, observation_gt)
+
+    output_dict = {
+        "mse": mse,
+        "psnr": psnr,
+    }
+
+    return output_dict
+
+
+
 def get_maze_grid(env_id):
     # import gym
     # maze_string = gym.make(env_id).str_maze_spec
@@ -163,6 +187,102 @@ def get_random_start_goal(env_id, batch_size):
     goal = np.concatenate([x, y], -1)
     goal = np.tile(goal[None, :], (batch_size, 1)) + 1
     return start, goal
+
+
+def log_timeseries_plots(all_preds, truth, context_frames, namespace, step, frequency: Optional[str] = None):
+    """
+    Plot timeseries and log to wandb.
+    :param all_preds: (samples, time, batch, feature)
+    :param truth: (time, batch, feature)
+    """
+
+    if wandb.run is not None:
+        batch_idx = 0  # Adjust this as needed based on the dataset 
+        # In pytorch-ts repo, the following values are used - electricity: 0, solar: 3, wikipedia: 0
+
+        preds = all_preds[:, context_frames:, batch_idx, :].detach().cpu().numpy()
+        truth = truth[:, batch_idx, :].detach().cpu().numpy()
+        seq_length, target_dim = truth.shape
+
+        rows = 4
+        cols = 4
+        fig, axs = plt.subplots(rows, cols, figsize=(20, 12))
+        axx = axs.ravel()
+
+        freq_map = {
+            "D": "d",
+            "B": "d",
+            "30min": "h",
+            "H": "h",
+        }
+        freq_label = freq_map.get(frequency, "")
+
+        for feature in range(min(rows * cols, target_dim)):
+            ax = axx[feature]
+
+            ax.plot(truth[:, feature], label="Ground truth trajectory", color='#008000', linewidth=2)
+            median_pred = np.median(preds[:, :, feature], axis=0)
+            ax.plot(range(context_frames, seq_length), median_pred, label="Median prediction", color='#0000FF', 
+                    linewidth=2)
+
+            ax.axvline(x=context_frames, color="dimgray", linestyle="--")
+            ax.axvspan(context_frames, seq_length, facecolor="oldlace")
+
+            # 90% prediction interval
+            lower_90 = np.percentile(preds[:, :, feature], 5, axis=0)
+            upper_90 = np.percentile(preds[:, :, feature], 95, axis=0)
+            ax.fill_between(
+                range(context_frames, seq_length),
+                lower_90,
+                upper_90,
+                color="lavender",
+                label="90% prediction interval",
+            )
+
+            # 50% prediction interval
+            lower_50 = np.percentile(preds[:, :, feature], 25, axis=0)
+            upper_50 = np.percentile(preds[:, :, feature], 75, axis=0)
+            ax.fill_between(
+                range(context_frames, seq_length),
+                lower_50,
+                upper_50,
+                color="lightsteelblue",
+                label="50% prediction interval",
+            )
+
+            ax.set_title(f"Feature {feature + 1}", fontsize=16, weight="bold")
+
+            ax.set_xlim([0, seq_length - 1])
+            tick_positions = np.linspace(0, seq_length - 1, num=5)
+            tick_positions = np.round(tick_positions).astype(int)
+            tick_positions[2] = context_frames
+            if frequency == "30min":
+                tick_labels = [f"{(i - context_frames) / 2:+} {freq_label}" for i in tick_positions]
+            else:
+                tick_labels = [f"{i - context_frames:+} {freq_label}" for i in tick_positions]
+            tick_labels = [r'$t_0$' if x.startswith('+0') else x for x in tick_labels]
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels)
+
+            # Thicker black outline
+            for spine in ax.spines.values():
+                spine.set_edgecolor('black')
+                spine.set_linewidth(2)
+
+        # Add a proxy artist for the prediction horizon background color in the legend
+        from matplotlib.patches import Patch
+        prediction_horizon_patch = Patch(facecolor="oldlace", label="Prediction window")
+
+        # Legend outside the subplots
+        handles, labels = ax.get_legend_handles_labels()
+        handles.append(prediction_horizon_patch)
+        labels.append("Prediction window")
+        fig.legend(handles, labels, loc="upper center", ncols=3, fontsize=14)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.9])
+        wandb.log({f"{namespace}/timeseries": wandb.Image(plt)}, step=step if step is not 0 else None)
+        plt.close(fig)
+
 
 
 def plot_maze_layout(ax, maze_grid):
