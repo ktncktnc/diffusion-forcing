@@ -17,13 +17,13 @@ class DiffusionForcingVideo(DiffusionForcingBase):
         super()._build_model()
 
         if self.cfg.compute_fid_lpips:
-            self.validation_fid_model = FrechetInceptionDistance(feature=64)
-            self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity()
+            self.validation_fid_model = FrechetInceptionDistance(feature=64).to(self.device)
+            self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity().to(self.device)
         else:
             self.validation_fid_model = None
             self.validation_lpips_model = None
 
-        self.validation_fvd_model = FrechetVideoDistance()
+        self.validation_fvd_model = FrechetVideoDistance().to(self.device)
 
     def training_step(self, batch, batch_idx):
         # if batch_idx == 0:
