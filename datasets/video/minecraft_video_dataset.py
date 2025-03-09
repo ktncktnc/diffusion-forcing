@@ -8,12 +8,26 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from .base_video_dataset import BaseVideoDataset
+from ..utils import download_with_proxy, download_from_drive
 
 
 class MinecraftVideoDataset(BaseVideoDataset):
     """
     Minecraft dataset
     """
+    file_ids = {
+        'aa': '1-_CgkKlnyRYuTtjI5kGFSPQf6aRByU72',
+        'ab': '1-tJNS7KlPXhqp1vfocVg2POB1URl7pEd',
+        'ac': '1-zaToMdn280ILMEW-Fl_HoHqIk-Z3j0d',
+        'ad': '10DA-gBFRe9b0puqwwHdFB1f7eOKf-vVz',
+        'ae': '10J-CiAKwsrZwzJ7obenUWJ3PdvKU-Y9P',
+        'af': '10dGhBqhXtUxxw06ni7x3iIjUYBCMYMoY',
+        'ag': '1197B1rY547hyqGIuNO6akbNY0W3aqacp',
+        'ah': '11AtL2DpJDSJ5v_yhgdmIQJQiEJsiW1LN',
+        'ai': '11SVqDauKrkCGxWLUHnZNpsrjYTf0b42r',
+        'aj': '11b06AUN57AFiJtYzLnl0jwOj--x1TSin',
+        'ak': '11nhCcFPU82rquvu8_gf9ZVp3CSzCxvEc'
+    }
 
     def __init__(self, cfg: DictConfig, split: str = "training"):
         if split == "test":
@@ -21,19 +35,16 @@ class MinecraftVideoDataset(BaseVideoDataset):
         super().__init__(cfg, split)
 
     def download_dataset(self) -> Sequence[int]:
+        # need to download the files from the drive to raw folder yourself
         from internetarchive import download
 
         part_suffixes = ["aa", "ab", "ac", "ad", "ae", "af", "ag", "ah", "ai", "aj", "ak"]
-        for part_suffix in part_suffixes:
-            identifier = f"minecraft_marsh_dataset_{part_suffix}"
-            file_name = f"minecraft.tar.part{part_suffix}"
-            download(identifier, file_name, destdir=self.save_dir, verbose=True)
 
         combined_bytes = io.BytesIO()
         for part_suffix in part_suffixes:
-            identifier = f"minecraft_marsh_dataset_{part_suffix}"
             file_name = f"minecraft.tar.part{part_suffix}"
-            part_file = self.save_dir / identifier / file_name
+            part_file = self.save_dir / "raw" / file_name
+            
             with open(part_file, "rb") as part:
                 combined_bytes.write(part.read())
         combined_bytes.seek(0)
@@ -42,11 +53,11 @@ class MinecraftVideoDataset(BaseVideoDataset):
         (self.save_dir / "minecraft/test").rename(self.save_dir / "validation")
         (self.save_dir / "minecraft/train").rename(self.save_dir / "training")
         (self.save_dir / "minecraft").rmdir()
-        for part_suffix in part_suffixes:
-            identifier = f"minecraft_marsh_dataset_{part_suffix}"
-            file_name = f"minecraft.tar.part{part_suffix}"
-            part_file = self.save_dir / identifier / file_name
-            part_file.rmdir()
+        # for part_suffix in part_suffixes:
+        #     identifier = f"minecraft_marsh_dataset_{part_suffix}"
+        #     file_name = f"minecraft.tar.part{part_suffix}"
+        #     part_file = self.save_dir / identifier / file_name
+        #     part_file.rmdir()
 
     def get_data_paths(self, split):
         data_dir = self.save_dir / split

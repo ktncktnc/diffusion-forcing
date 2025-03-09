@@ -1,0 +1,3 @@
+ssh -N -R 9092:192.168.1.115:9090 s224075134@h100-m-11.ai.deakin.edu.au
+
+Download from gg drive when exceed number of downloads: https://github.com/wkentaro/gdown?tab=readme-ov-file#i-set-the-permission-anyone-with-link-but-i-still-cant-download

@@ -3,7 +3,7 @@ from einops import rearrange
 import torch
 
 from .df_base import DiffusionForcingBase
-
+from ..common.metrics import FrechetVideoDistance
 from algorithms.common.metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,
@@ -23,7 +23,7 @@ class DiffusionForcingVideo(DiffusionForcingBase):
             self.validation_fid_model = None
             self.validation_lpips_model = None
 
-        self.validation_fvd_model = None  # FrechetVideoDistance()
+        self.validation_fvd_model = FrechetVideoDistance()
 
     def training_step(self, batch, batch_idx):
         # if batch_idx == 0:

@@ -7,7 +7,7 @@ weight_decay: 2e-3 # 1e-3 for dmlab, bigger for minecraft
 warmup_steps: 5000
 gt_first_frame: 0.0
 calc_crps_sum: False
-compute_fid_lpips: False
+compute_fid_lpips: True
 uncertainty_scale: 1
 learnable_init_z: True
 optimizer_beta: [0.9, 0.99]

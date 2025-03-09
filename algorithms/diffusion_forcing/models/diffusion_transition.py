@@ -208,6 +208,7 @@ class DiffusionTransitionModel(nn.Module):
         noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
         noised_x_next = self.q_sample(x_start=x_next, t=t, noise=noise)
 
+        # condition on predicted x_0_next
         x_self_cond = None
         if self.self_condition and random() < 0.5:
             with torch.no_grad():

@@ -83,19 +83,19 @@ class DiffusionForcingBase(BasePytorchAlgo):
             raise ValueError("Number of context frames must be divisible by frame stack size")
 
         nonterminals = batch[-1]
-        nonterminals = nonterminals.bool().permute(1, 0)
-        masks = torch.cumprod(nonterminals, dim=0).contiguous()
+        nonterminals = nonterminals.bool().permute(1, 0) # (n_frames, batch_size)
+        masks = torch.cumprod(nonterminals, dim=0).contiguous() # (n_frames, batch_size)
         n_frames = n_frames // self.frame_stack
 
         if self.external_cond_dim:
             conditions = batch[1]
-            conditions = torch.cat([torch.zeros_like(conditions[:, :1]), conditions[:, 1:]], 1)
-            conditions = rearrange(conditions, "b (t fs) d -> t b (fs d)", fs=self.frame_stack).contiguous()
+            conditions = torch.cat([torch.zeros_like(conditions[:, :1]), conditions[:, 1:]], 1) # remove first frame from conditions (why: )
+            conditions = rearrange(conditions, "b (t fs) d -> t b (fs d)", fs=self.frame_stack).contiguous() # stack frames
         else:
-            conditions = [None for _ in range(n_frames)]
+            conditions = [None for _ in range(n_frames)] # no external conditions
 
         xs = self._normalize_x(xs)
-        xs = rearrange(xs, "b (t fs) c ... -> t b (fs c) ...", fs=self.frame_stack).contiguous()
+        xs = rearrange(xs, "b (t fs) c ... -> t b (fs c) ...", fs=self.frame_stack).contiguous() # stack frames
 
         if self.learnable_init_z:
             init_z = self.init_z[None].expand(batch_size, *self.z_shape)
@@ -126,9 +126,11 @@ class DiffusionForcingBase(BasePytorchAlgo):
         cum_snr = None
         for t in range(0, n_frames):
             deterministic_t = None
+            # teacher forcing: t always = 0 ??? 
             if random() <= self.gt_cond_prob or (t == 0 and random() <= self.gt_first_frame):
                 deterministic_t = 0
 
+            # loop through time => slow
             z_next, x_next_pred, l, cum_snr = self.transition_model(
                 z, xs[t], conditions[t], deterministic_t=deterministic_t, cum_snr=cum_snr
             )

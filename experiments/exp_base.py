@@ -17,7 +17,7 @@ from lightning.pytorch.strategies.ddp import DDPStrategy
 import lightning.pytorch as pl
 from lightning.pytorch.loggers.wandb import WandbLogger
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
-from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping, TQDMProgressBar
 
 from omegaconf import DictConfig
 
@@ -178,6 +178,7 @@ class BaseLightningExperiment(BaseExperiment):
             self.early_stopping_callback = EarlyStopping(**self.cfg.training.early_stopping)
             callbacks.append(self.early_stopping_callback)
 
+        callbacks.append(TQDMProgressBar(refresh_rate=50))
         trainer = pl.Trainer(
             accelerator="auto",
             logger=self.logger,

@@ -13,7 +13,7 @@ tqdm
 opencv-python
 matplotlib
 click
-moviepy
+moviepy==1.0.3
 imageio
 einops
 pandas
