@@ -7,7 +7,7 @@ import cv2
 from einops import rearrange
 from torchvision.transforms import Resize
 
-from .df_video import RNN_DiffusionForcingVideo
+from .rnn_df_video import RNN_DiffusionForcingVideo
 from utils.logging_utils import log_video, get_validation_metrics_for_videos
 from utils.robot_utils import unpack_to_1d
 

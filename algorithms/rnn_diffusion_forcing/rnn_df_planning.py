@@ -9,7 +9,7 @@ from PIL import Image
 
 from einops import rearrange
 
-from .df_base import RNN_DiffusionForcingBase
+from .rnn_df_base import RNN_DiffusionForcingBase
 from .models.diffusion_transition import DiffusionTransitionModel
 from utils.logging_utils import make_convergence_animation, make_mpc_animation, make_trajectory_images
 

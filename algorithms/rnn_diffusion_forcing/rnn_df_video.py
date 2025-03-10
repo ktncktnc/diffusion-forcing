@@ -3,7 +3,7 @@ from einops import rearrange
 import torch
 from omegaconf import DictConfig
 
-from .df_base import RNN_DiffusionForcingBase
+from .rnn_df_base import RNN_DiffusionForcingBase
 from algorithms.common.metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,

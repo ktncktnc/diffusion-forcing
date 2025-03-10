@@ -295,10 +295,6 @@ class DiffusionTransitionModel(nn.Module):
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def model_predictions(self, x, t, z_cond, external_cond=None, x_self_cond=None):
-        # print('x:', x.shape)
-        # print('t:', t.shape)
-        # print('z_cond:', z_cond.shape)
-        # exit(0)
         z_next = self.model(x, t, z_cond, external_cond, x_self_cond)
         model_output = self.x_from_z(z_next)
 

@@ -10,7 +10,7 @@ import json
 
 from utils.logging_utils import log_timeseries_plots
 from algorithms.common.metrics import crps_quantile_sum
-from .df_base import RNN_DiffusionForcingBase
+from .rnn_df_base import RNN_DiffusionForcingBase
 
 
 class RNN_DiffusionForcingPrediction(RNN_DiffusionForcingBase):
