@@ -18,10 +18,11 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 
 from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 from utils.logging_utils import get_validation_metrics_for_states
-from .models.diffusion_transition import DiffusionTransitionModel
+from .models.diffusion_transition import DiffusionCorrectionransitionModel
+from ..rnn.models.rnn_unet import RNN_UNet
 
 
-class RNN_DiffusionForcingBase(BasePytorchAlgo):
+class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
         self.x_shape = cfg.x_shape
@@ -30,7 +31,7 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
         self.cfg.diffusion.cum_snr_decay = self.cfg.diffusion.cum_snr_decay**self.frame_stack
         self.x_stacked_shape = list(cfg.x_shape)
         self.x_stacked_shape[0] *= cfg.frame_stack
-        self.is_spatial = len(self.x_shape) == 3  # pixel
+        self.is_spatial = len(self.x_stacked_shape) == 3  # pixel
         self.gt_cond_prob = cfg.gt_cond_prob  # probability to condition one-step diffusion o_t+1 on ground truth o_t
         self.gt_first_frame = cfg.gt_first_frame
         self.context_frames = cfg.context_frames  # number of context frames at validation time
@@ -42,16 +43,21 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
         self.validation_step_outputs = []
         self.min_crps_sum = float("inf")
         self.learnable_init_z = cfg.learnable_init_z
+        self.correction_size = cfg.correction_size
 
         super().__init__(cfg)
 
     def _build_model(self):
-        self.transition_model = DiffusionTransitionModel(
+        self.transition_model = DiffusionCorrectionransitionModel(
             self.x_stacked_shape, self.z_shape, self.external_cond_dim, self.cfg.diffusion
         )
+        # TODO: add original algo
+        self.original_algo = RNN_UNet(
+            self.x_stacked_shape, self.z_shape, self.external_cond_dim, self.cfg.original_rnn
+        )
         self.register_data_mean_std(self.cfg.data_mean, self.cfg.data_std)
-        if self.learnable_init_z:
-            self.init_z = nn.Parameter(torch.randn(list(self.z_shape)), requires_grad=True)
+        # if self.learnable_init_z:
+        #     self.init_z = nn.Parameter(torch.randn(list(self.z_shape)), requires_grad=True)
 
     def configure_optimizers(self):
         transition_params = list(self.transition_model.parameters())
@@ -74,6 +80,8 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
                 pg["lr"] = lr_scale * self.cfg.lr
 
     def _preprocess_batch(self, batch):
+        _, (pred_xs, zs) = self.original_algo.validation_step(batch, 0, return_prediction=True)
+
         xs = batch[0]
         batch_size, n_frames = xs.shape[:2]
 
@@ -94,16 +102,12 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
         else:
             conditions = [None for _ in range(n_frames)]
 
+        # pred_xs already normalized ? and in the same shape as xs
         xs = self._normalize_x(xs)
         xs = rearrange(xs, "b (t fs) c ... -> t b (fs c) ...", fs=self.frame_stack).contiguous()
 
-        if self.learnable_init_z:
-            init_z = self.init_z[None].expand(batch_size, *self.z_shape)
-        else:
-            init_z = torch.zeros(batch_size, *self.z_shape)
-            init_z = init_z.to(xs.device)
-
-        return xs, conditions, masks, init_z
+        residuals = xs - pred_xs
+        return xs, pred_xs, residuals, zs, conditions, masks
 
     def reweigh_loss(self, loss, weight=None):
         loss = rearrange(loss, "t b (fs c) ... -> t b fs c ...", fs=self.frame_stack)
@@ -116,30 +120,18 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
 
     def training_step(self, batch, batch_idx):
         # training step for dynamics
-        # training in diffusion forcing scheme: z_t+1 ~ p(z_t+1 | z_t, x_t^i, c_t) => reduce error accumulation?
-        xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
+        xs, org_xs_pred, residuals, zs, conditions, masks  = self._preprocess_batch(batch)
 
         n_frames, batch_size, _, *_ = xs.shape
 
-        xs_pred = []
         loss = []
-        z = init_z
-        cum_snr = None
-        for t in range(0, n_frames):
-            deterministic_t = None
-            if random() <= self.gt_cond_prob or (t == 0 and random() <= self.gt_first_frame):
-                deterministic_t = 0
-
-            z_next, x_next_pred, l, cum_snr = self.transition_model(
-                z, xs[t], conditions[t], deterministic_t=deterministic_t, cum_snr=cum_snr
-            )
-
-            z = z_next
-            xs_pred.append(x_next_pred)
-            loss.append(l)
-
-        xs_pred = torch.stack(xs_pred)
-        loss = torch.stack(loss)
+        # denoise all timesteps
+        # TODO: edit cum_snr_next, check forward
+        residual_pred, loss, cum_snr_next = self.transition_model(
+            zs, residuals, conditions, deterministic_t=None, cum_snr=None
+        )
+        xs_pred = residual_pred + org_xs_pred
+        
         x_loss = self.reweigh_loss(loss, masks)
         loss = x_loss
 
@@ -157,6 +149,7 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
         output_dict = {
             "loss": loss,
             "xs_pred": self._unnormalize_x(xs_pred),
+            "org_xs_pred": self._unnormalize_x(org_xs_pred),
             "xs": self._unnormalize_x(xs),
         }
 
@@ -168,77 +161,82 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
             # repeat batch for crps sum for time series prediction
             batch = [d[None].expand(self.calc_crps_sum, *([-1] * len(d.shape))).flatten(0, 1) for d in batch]
 
-        xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
+        xs, org_xs_pred, residuals, zs, conditions, masks = self._preprocess_batch(batch)
 
         n_frames, batch_size, *_ = xs.shape
         xs_pred = []
         xs_pred_all = []
-        z = init_z
+        org_xs_pred = []
 
         # context
-        for t in range(0, self.context_frames // self.frame_stack):
-            z, x_next_pred, _, _ = self.transition_model(z, xs[t], conditions[t], deterministic_t=0)
-            xs_pred.append(x_next_pred)
+        n_context = self.context_frames // self.frame_stack
+        for t in range(0, n_context):
+            x_next_pred, z = self.original_algo.roll_1_step(
+                x=xs[t],
+                z=z,
+                external_cond=conditions[t],
+                t=t,
+                x_self_cond=False
+            )
+            org_xs_pred.append(x_next_pred)
 
+        t = n_context
         # prediction
-        while len(xs_pred) < n_frames:
-            if self.chunk_size > 0:
-                horizon = min(n_frames - len(xs_pred), self.chunk_size)
-            else:
-                horizon = n_frames - len(xs_pred)
+        while len(xs_pred) < n_frames - n_context:
+            generation_chunk_size = min(self.correction_size, n_frames - len(xs_pred))
+            ts = [t + i for i in range(generation_chunk_size)]
 
-            chunk = [
-                torch.randn((batch_size,) + tuple(self.x_stacked_shape), device=self.device) for _ in range(horizon)
-            ]
+            chunk_org_xs_pred, chunk_zs = self.original_algo.rollout(
+                first_x=xs_pred[-1],
+                init_z=z,
+                ts=ts,
+                conditions=conditions[t:t + generation_chunk_size],
+            )
 
-            pyramid_height = self.sampling_timesteps + int(horizon * self.uncertainty_scale)
-            pyramid = np.zeros((pyramid_height, horizon), dtype=int)
-            for m in range(pyramid_height):
-                for t in range(horizon):
-                    pyramid[m, t] = m - int(t * self.uncertainty_scale)
-            pyramid = np.clip(pyramid, a_min=0, a_max=self.sampling_timesteps, dtype=int)
+            # get last z and remove it from chunk_zs
+            z = chunk_zs[-1]
+            chunk_zs = chunk_zs[:-1]
 
-            for m in range(pyramid_height):
-                if self.transition_model.return_all_timesteps:
-                    xs_pred_all.append(chunk)
+            org_xs_pred += chunk_org_xs_pred
 
-                z_chunk = z.detach()
-                for t in range(horizon):
-                    i = min(pyramid[m, t], self.sampling_timesteps - 1)
+            # get residuals from diffusion    
+            residual_pred = self.transition_model.ddim_sample(
+                chunk_org_xs_pred.shape, 
+                z_cond=chunk_zs, 
+                external_cond=conditions[t:t + generation_chunk_size],
+                return_all_timesteps=False
+            )
+            xs_pred = residual_pred + chunk_org_xs_pred
+            xs_pred_all += xs_pred
 
-                    chunk[t], z_chunk = self.transition_model.ddim_sample_step(
-                        chunk[t], z_chunk, conditions[len(xs_pred) + t], i
-                    )
-
-                    # theoretically, one shall feed new chunk[t] with last z_chunk into transition model again 
-                    # to get the posterior z_chunk, and optionaly, with small noise level k>0 for stablization. 
-                    # However, since z_chunk in the above line already contains info about updated chunk[t] in 
-                    # our simplied math model, we deem it suffice to directly take this z_chunk estimated from 
-                    # last z_chunk and noiser chunk[t]. This saves half of the compute from posterior steps. 
-                    # The effect of the above simplification already contains stablization: we always stablize 
-                    # (ddim_sample_step is never called with noise level k=0 above)
-
-            z = z_chunk
-            xs_pred += chunk # add next fully denoised chunk
+            # TODO: do we need to feed new pred into transition model again to get posterior z_chunk? 
 
         xs_pred = torch.stack(xs_pred)
+        org_xs_pred = torch.stack(org_xs_pred)
         loss = F.mse_loss(xs_pred, xs, reduction="none")
         loss = self.reweigh_loss(loss, masks)
 
+        org_loss = F.mse_loss(org_xs_pred, xs, reduction="none")
+        org_loss = self.reweigh_loss(org_loss, masks)
+
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        org_xs_pred = rearrange(org_xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
 
         xs = self._unnormalize_x(xs)
         xs_pred = self._unnormalize_x(xs_pred)
+        org_xs_pred = self._unnormalize_x(org_xs_pred)
 
         if not self.is_spatial:
             if self.transition_model.return_all_timesteps:
                 xs_pred_all = [torch.stack(item) for item in xs_pred_all]
+
                 limit = self.transition_model.sampling_timesteps
                 for i in np.linspace(1, limit, 5, dtype=int):
                     xs_pred = xs_pred_all[i]
                     xs_pred = self._unnormalize_x(xs_pred)
                     metric_dict = get_validation_metrics_for_states(xs_pred, xs)
+
                     self.log_dict(
                         {f"{namespace}/{i}_sampling_steps_{k}": v for k, v in metric_dict.items()},
                         on_step=False,
@@ -254,7 +252,15 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
                     prog_bar=True,
                 )
 
-        self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
+                org_metric_dict = get_validation_metrics_for_states(org_xs_pred, xs)
+                self.log_dict(
+                    {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()},
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=True,
+                )
+
+        self.validation_step_outputs.append((xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
 
         return loss
 

@@ -26,14 +26,15 @@ from algorithms.common.metrics import (
 
 # FIXME: clean up & check this util
 def log_video(
-    observation_hat,
-    observation_gt=None,
+    observation_1,
+    observation_2=None,
     step=0,
     namespace="train",
     prefix="video",
     context_frames=0,
     color=(255, 0, 0),
     logger=None,
+    add_red_border=True,
 ):
     """
     take in video tensors in range [-1, 1] and log into wandb
@@ -49,17 +50,20 @@ def log_video(
     """
     if not logger:
         logger = wandb
-    if observation_gt is None:
-        observation_gt = torch.zeros_like(observation_hat)
-    observation_hat[:context_frames] = observation_gt[:context_frames]
+    if observation_2 is None:
+        observation_2 = torch.zeros_like(observation_1)
+    observation_1[:context_frames] = observation_2[:context_frames]
+    
     # Add red border of 1 pixel width to the context frames
-    for i, c in enumerate(color):
-        c = c / 255.0
-        observation_hat[:context_frames, :, i, [0, -1], :] = c
-        observation_hat[:context_frames, :, i, :, [0, -1]] = c
-        observation_gt[:, :, i, [0, -1], :] = c
-        observation_gt[:, :, i, :, [0, -1]] = c
-    video = torch.cat([observation_hat, observation_gt], -1).detach().cpu().numpy()
+    if add_red_border:
+        for i, c in enumerate(color):
+            c = c / 255.0
+            observation_1[:context_frames, :, i, [0, -1], :] = c
+            observation_1[:context_frames, :, i, :, [0, -1]] = c
+            observation_2[:, :, i, [0, -1], :] = c
+            observation_2[:, :, i, :, [0, -1]] = c
+        
+    video = torch.cat([observation_1, observation_2], -1).detach().cpu().numpy()
     video = np.transpose(np.clip(video, a_min=0.0, a_max=1.0) * 255, (1, 0, 2, 3, 4)).astype(np.uint8)
     # video[..., 1:] = video[..., :1]  # remove framestack, only visualize current frame
     n_samples = len(video)

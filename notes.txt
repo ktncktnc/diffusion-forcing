@@ -1,0 +1,27 @@
+11/03/2025
+- No need to write separate dataset class => Can generate hidden state inside algo class
+- Run RNN for whole training set, keep dev DC. Then run more experiments on RNN, SSM.
+- How to evaluate consistency of model: spatial and temporal consistency 
+    + LLM?
+        
+=====================================================================================================================
+12/03/2025
+- Mismatch between noise level gap in training and testing. In training, n_diffusion_step=1000, but in testing, only use 100. Therefore, noise level gap in training and testing is different. (E.g. Training: 1->2->3->4..., testing 1->3->5->7...)
+- Training: noise level gap can be randomized
+- View Full attention and causal attention as CFG: uncondition as causal attention, condition as full attention. In testing:
+    + causal attention
+    + full attention
+    + CFG between them
+
+- Hyperparameters:
+    + Noise level gap:
+        / Constant (a = 0): all frames have the same noise level
+        / Linearly increasing (a > 0, random in training in the range [1,max_gap])
+        => Unify as the range [0,max_gap]
+    + Frame attention (Self-Attention):
+        / Causal: a frame can only atten to previous frames 
+        / Full: bi-directional attention
+    + Hidden state condition (Cross-attention, view hidden state as condition):
+        / h_0 (View as class)
+        / Causal (Cross-attention)
+        / Full (Cross-attention)

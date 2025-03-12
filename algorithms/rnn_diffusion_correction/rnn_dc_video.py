@@ -3,7 +3,7 @@ from einops import rearrange
 import torch
 from omegaconf import DictConfig
 
-from .rnn_base import RNNBase
+from .rnn_dc_base import RNN_DiffusionCorrectionBase
 from algorithms.common.metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,
@@ -12,7 +12,7 @@ from algorithms.common.metrics import (
 from utils.logging_utils import log_video, get_validation_metrics_for_videos
 
 
-class RNNVideo(RNNBase):
+class RNN_DiffusionForcingVideo(RNN_DiffusionCorrectionBase):
     def __init__(self, cfg: DictConfig):
         self.metrics = cfg.metrics
         super().__init__(cfg)
@@ -25,19 +25,25 @@ class RNNVideo(RNNBase):
         self.validation_fvd_model = [FrechetVideoDistance()] if "fvd" in self.metrics else None
 
     def training_step(self, batch, batch_idx):
-        # if batch_idx == 0:
-        #     self.visualize_noise(batch)
-
         output_dict = super().training_step(batch, batch_idx)
-        if batch_idx % 5000 == 0:
-            if self.logger is not None:
-                log_video(
-                    output_dict["xs_pred"],
-                    output_dict["xs"],
-                    step=self.global_step,
-                    namespace="training_vis",
-                    logger=self.logger.experiment,
-                )
+
+        if batch_idx % 5000 == 0 and self.logger is not None:
+            log_video(
+                output_dict["xs_pred"],
+                output_dict["xs"],
+                step=self.global_step,
+                namespace="training_vis",
+                logger=self.logger.experiment,
+            )
+            log_video(
+                output_dict["xs_pred"],
+                output_dict["org_xs_pred"],
+                namespace="training_vis",
+                context_frames=self.context_frames,
+                logger=self.logger.experiment,
+                add_red_border=False
+            )
+
         return output_dict
 
     def on_validation_epoch_end(self, namespace="validation"):
@@ -45,22 +51,33 @@ class RNNVideo(RNNBase):
             return
 
         xs_pred = []
+        org_xs_pred = []
         xs = []
-        for batch in self.validation_step_outputs:
-            pred, gt = batch[:2] # ignore hidden states zs
+        for pred, org_pred, gt in self.validation_step_outputs:
             xs_pred.append(pred)
+            org_xs_pred.append(org_pred)
             xs.append(gt)
         xs_pred = torch.cat(xs_pred, 1)
+        org_xs_pred = torch.cat(org_xs_pred, 1)
         xs = torch.cat(xs, 1)
-        if self.logger is not None:
-            log_video(
-                xs_pred,
-                xs,
-                step=None if namespace == "test" else self.global_step,
-                namespace=namespace + "_vis",
-                context_frames=self.context_frames,
-                logger=self.logger.experiment,
-            )
+
+        log_video(
+            xs_pred,
+            xs,
+            step=None if namespace == "test" else self.global_step,
+            namespace=namespace + "_vis",
+            context_frames=self.context_frames,
+            logger=self.logger.experiment,
+        )
+        log_video(
+            xs_pred,
+            org_xs_pred,
+            step=None if namespace == "test" else self.global_step,
+            namespace=namespace + "_vis",
+            context_frames=self.context_frames,
+            logger=self.logger.experiment,
+            add_red_border=False
+        )
 
         metric_dict = get_validation_metrics_for_videos(
             xs_pred[self.context_frames :],
@@ -71,6 +88,17 @@ class RNNVideo(RNNBase):
         )
         self.log_dict(
             {f"{namespace}/{k}": v for k, v in metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
+        )
+
+        org_metric_dict = get_validation_metrics_for_videos(
+            org_xs_pred[self.context_frames :],
+            xs[self.context_frames :],
+            lpips_model=self.validation_lpips_model,
+            fid_model=self.validation_fid_model,
+            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
+        )
+        self.log_dict(
+            {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
         )
 
         self.validation_step_outputs.clear()

@@ -35,6 +35,7 @@ class BaseVideoDataset(torch.utils.data.Dataset, ABC):
         )
         self.frame_skip = cfg.frame_skip
         self.save_dir = Path(cfg.save_dir)
+        self.stride = cfg.stride if hasattr(cfg, "stride") else 1
         self.save_dir.mkdir(exist_ok=True, parents=True)
         self.split_dir = self.save_dir / f"{split}"
 
@@ -54,7 +55,7 @@ class BaseVideoDataset(torch.utils.data.Dataset, ABC):
 
         self.metadata = json.load(open(self.metadata_path, "r"))
         self.data_paths = self.get_data_paths(self.split)
-        self.clips_per_video = np.clip(np.array(self.metadata[split]) - self.n_frames + 1, a_min=1, a_max=None).astype(
+        self.clips_per_video = np.clip(np.array(np.array(self.metadata[split]) - self.n_frames)//self.stride + 1, a_min=1, a_max=None).astype(
             np.int32
         )
         self.cum_clips_per_video = np.cumsum(self.clips_per_video)
@@ -90,7 +91,13 @@ class BaseVideoDataset(torch.utils.data.Dataset, ABC):
     def split_idx(self, idx):
         video_idx = np.argmax(self.cum_clips_per_video > idx)
         frame_idx = idx - np.pad(self.cum_clips_per_video, (1, 0))[video_idx]
+        frame_idx *= self.stride
         return video_idx, frame_idx
+    
+    def video_idx_to_begin_and_end(self, video_idx):
+        begin_idx = self.cum_clips_per_video[video_idx - 1] if video_idx > 0 else 0
+        end_idx = self.cum_clips_per_video[video_idx]
+        return begin_idx, end_idx
 
     @staticmethod
     def load_video(path: Path):
@@ -128,8 +135,16 @@ class BaseVideoDataset(torch.utils.data.Dataset, ABC):
 
     def __len__(self):
         return self.clips_per_video.sum()
+    
+    def video_len(self):
+        return len(self.clips_per_video)
 
     def __getitem__(self, idx):
+        """
+        Get a video clip from the dataset
+        :param idx: index of the video clip
+        :return: video clip as a tensor (unnormalized)
+        """
         idx = self.idx_remap[idx]
         video_idx, frame_idx = self.split_idx(idx)
         video_path = self.data_paths[video_idx]

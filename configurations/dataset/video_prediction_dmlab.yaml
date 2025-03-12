@@ -1,0 +1,3 @@
+defaults:
+  - base_prediction_video
+  - video_dmlab@original_dataset

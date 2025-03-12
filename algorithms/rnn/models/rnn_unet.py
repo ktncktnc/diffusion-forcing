@@ -89,3 +89,10 @@ class RNNUNet(nn.Module):
         z_next = self.model(x, t, z_cond, external_cond, x_self_cond)
         pred_next_x = self.x_from_z(z_next)
         return ModelPrediction(pred_next_x, z_next)
+    
+    def mapping_config(self):
+        return {
+            "network_size": self.network_size,
+            "num_gru_layers": self.num_gru_layers,
+            "self_condition": self.self_condition,
+        }

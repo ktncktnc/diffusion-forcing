@@ -195,9 +195,61 @@ class RNNBase(BasePytorchAlgo):
         }
 
         return output_dict
+    
+    @torch.no_grad()
+    def rollout(self, first_x, init_z, ts, conditions):
+        """
+        Rollout the model for n_frames.
+        
+        Args:
+            xs (Tensor): Initial frames [n_frames, batch_size, ...]
+            init_z (Tensor): Initial latent state
+            conditions (Tensor): External conditions [n_frames, batch_size, ...]
+            n_frames (int): Number of frames to rollout
+        
+        Returns:
+            tuple: Contains:
+                - xs_pred (Tensor): Predicted frames [n_frames, batch_size, ...]
+                - zs (list): Latent states for each frame
+        """
+        xs_pred = []
+        zs = [init_z]
+        z = init_z
+        x = first_x
+
+        for i, t in enumerate(ts):
+            x_next, z_next, _ = self.roll_1_step(
+                x=x,
+                z_cond=z,
+                external_cond=conditions[i],
+                t=t,
+                x_self_cond=False
+            )
+            z = z_next
+            x = x_next
+            xs_pred.append(x_next)
+            zs.append(z)
+
+        xs_pred = torch.stack(xs_pred)
+        zs = torch.stack(zs)
+
+        return xs_pred, zs
+    
+    @torch.no_grad()
+    def roll_1_step(self, x, z, condition, t):
+        x_next, z_next, _ = self.transition_model(
+            x=x,
+            x_next=None,
+            z_cond=z,
+            external_cond=condition,
+            t=t,
+            x_self_cond=False
+        )
+        return x_next, z_next
+
 
     @torch.no_grad()
-    def validation_step(self, batch, batch_idx, namespace="validation"):
+    def validation_step(self, batch, batch_idx, return_prediction=False, save_z=False, namespace="validation"):
         if self.calc_crps_sum:
             # repeat batch for crps sum for time series prediction
             batch = [d[None].expand(self.calc_crps_sum, *([-1] * len(d.shape))).flatten(0, 1) for d in batch]
@@ -208,6 +260,7 @@ class RNNBase(BasePytorchAlgo):
         xs_pred = []
         xs_pred_all = []
         z = init_z
+        zs = [z]
 
         # using first frame as ground truth, generate n-1 next frames
         # => only generate n-1 frames
@@ -224,6 +277,10 @@ class RNNBase(BasePytorchAlgo):
                 x_self_cond=False
             )
             xs_pred.append(x_next_pred)
+            zs.append(z)
+
+        # remove last hidden state
+        zs = zs[:-1]
 
         t = n_context
 
@@ -239,6 +296,7 @@ class RNNBase(BasePytorchAlgo):
             )
             z = z_next
             xs_pred.append(x_next)
+            zs.append(z)
 
             t+=1
 
@@ -279,8 +337,14 @@ class RNNBase(BasePytorchAlgo):
                     prog_bar=True,
                 )
 
-        self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
+        if save_z:
+            self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu(), zs.cpu()))
+        else:
+            self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
 
+        if return_prediction:
+            return loss, (xs_pred, xs)
+        
         return loss
 
     def on_validation_epoch_end(self, namespace="validation"):
@@ -304,3 +368,14 @@ class RNNBase(BasePytorchAlgo):
         std = self.data_std.reshape(shape).to(xs.device)
         return xs * std + mean
     
+    def mapping_config(self):
+        """
+        Return the mapping configuration for the model.
+        """
+        return {
+            'x_shape': self.x_shape,
+            'z_shape': self.z_shape,
+            'frame_stack': self.frame_stack,
+            'external_cond_dim': self.external_cond_dim,
+            'context_frames': self.context_frames,
+        } + self.transition_model.mapping_config()

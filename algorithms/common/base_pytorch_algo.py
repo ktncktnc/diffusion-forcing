@@ -251,3 +251,9 @@ class BasePytorchAlgo(pl.LightningModule, ABC):
             else:
                 v = torch.tensor(v)
             self.register_buffer(f"{namespace}_{k}", v.float().to(self.device))
+    
+    def mapping_config(self):
+        """
+        Return the mapping configuration for the model.
+        """
+        raise {}

@@ -4,9 +4,9 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:h100:1
 #SBATCH --qos=batch-short
-#SBATCH --job-name=rnn_dmlab
-#SBATCH --output=./logs/rnn_dmlab.out
-#BATCH --error=./logs/error/rnn_dmlab.err
+#SBATCH --job-name=df_rnn_dmlab
+#SBATCH --output=./logs/df_rnn_dmlab.out
+#BATCH --error=./logs/error/df_rnn_dmlab.err
 #SBATCH --time=72:00:00
 
 # Initialize conda first
@@ -18,6 +18,4 @@ conda activate df
 
 # Navigate to directory and run script
 cd /scratch/s224075134/temporal_diffusion/diffusion-forcing/
-# python -m main +name=rnn_dmlab_video algorithm=rnn_video experiment=exp_video dataset=video_dmlab algorithm.model.num_gru_layers=0 dataset.context_length=4 dataset.n_frames=36 dataset.frame_skip=1
-
-python -m main +name=rnn_dmlab_video algorithm=rnn_video experiment=exp_video dataset=video_error_dmlab 
+python -m main +name=rnn_dmlab_video algorithm=rnn_dc_video experiment=exp_video dataset=video_dmlab algorithm.diffusion.num_gru_layers=0 dataset.context_length=4 --cfg job

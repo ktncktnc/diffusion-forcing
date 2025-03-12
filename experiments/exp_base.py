@@ -23,7 +23,7 @@ from omegaconf import DictConfig
 
 from utils.print_utils import cyan
 from utils.distributed_utils import is_rank_zero
-
+from algorithms.common.config_mapping import ConfigMapping
 torch.set_float32_matmul_precision("high")
 
 
@@ -104,20 +104,34 @@ class BaseLightningExperiment(BaseExperiment):
     # each key has to be a yaml file under '[project_root]/configurations/dataset' without .yaml suffix
     compatible_datasets: Dict = NotImplementedError
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Only build the config mapping for error datasets
+        self._build_config_mapping()
+
     def _build_trainer_callbacks(self):
         callbacks = []
         if self.logger:
             callbacks.append(LearningRateMonitor("step", True))
 
-    def _build_training_loader(self) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
-        train_dataset = self._build_dataset("training")
+    def _build_training_loader(self, **kwargs) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
+        """
+        Build the training data loader
+        If kwargs are passed, they will be passed to the dataset constructor
+        :return: a pytorch dataloader
+
+        """
+        train_dataset = self._build_dataset("training", dataset_cfg=kwargs.get("dataset_cfg", None))
         shuffle = (
             False if isinstance(train_dataset, torch.utils.data.IterableDataset) else self.cfg.training.data.shuffle
         )
+        shuffle = kwargs.get("shuffle", shuffle)
+        batch_size = kwargs.get("batch_size", self.cfg.training.batch_size)
+
         if train_dataset:
             return torch.utils.data.DataLoader(
                 train_dataset,
-                batch_size=self.cfg.training.batch_size,
+                batch_size=batch_size,
                 num_workers=min(os.cpu_count(), self.cfg.training.data.num_workers),
                 shuffle=shuffle,
                 persistent_workers=True,
@@ -125,17 +139,19 @@ class BaseLightningExperiment(BaseExperiment):
         else:
             return None
 
-    def _build_validation_loader(self) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
-        validation_dataset = self._build_dataset("validation")
+    def _build_validation_loader(self, **kwargs) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
+        validation_dataset = self._build_dataset("validation", dataset_cfg=kwargs.get("dataset_cfg", None))
         shuffle = (
             False
             if isinstance(validation_dataset, torch.utils.data.IterableDataset)
             else self.cfg.validation.data.shuffle
         )
+        shuffle = kwargs.get("shuffle", shuffle)
+        batch_size = kwargs.get("batch_size", self.cfg.validation.batch_size)
         if validation_dataset:
             return torch.utils.data.DataLoader(
                 validation_dataset,
-                batch_size=self.cfg.validation.batch_size,
+                batch_size=batch_size,
                 num_workers=min(os.cpu_count(), self.cfg.validation.data.num_workers),
                 shuffle=shuffle,
                 persistent_workers=True,
@@ -143,19 +159,33 @@ class BaseLightningExperiment(BaseExperiment):
         else:
             return None
 
-    def _build_test_loader(self) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
-        test_dataset = self._build_dataset("test")
+    def _build_test_loader(self, **kwargs) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
+        test_dataset = self._build_dataset("test", dataset_cfg=kwargs.get("dataset_cfg", None))
         shuffle = False if isinstance(test_dataset, torch.utils.data.IterableDataset) else self.cfg.test.data.shuffle
+        shuffle = kwargs.get("shuffle", shuffle)
+        batch_size = kwargs.get("batch_size", self.cfg.test.batch_size)
+
         if test_dataset:
             return torch.utils.data.DataLoader(
                 test_dataset,
-                batch_size=self.cfg.test.batch_size,
+                batch_size=batch_size,
                 num_workers=min(os.cpu_count(), self.cfg.test.data.num_workers),
                 shuffle=shuffle,
                 persistent_workers=True,
             )
         else:
             return None
+
+    def _build_loader(self, split: str, **kwargs) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
+        if split == "training":
+            return self._build_training_loader(**kwargs)
+        elif split == "validation":
+            return self._build_validation_loader(**kwargs)
+        elif split == "test":
+            return self._build_test_loader(**kwargs)
+        else:
+            raise ValueError(f"split '{split}' not implemented")
+        
 
     def training(self) -> None:
         """
@@ -272,8 +302,24 @@ class BaseLightningExperiment(BaseExperiment):
             ckpt_path=self.ckpt_path,
         )
 
-    def _build_dataset(self, split: str) -> Optional[torch.utils.data.Dataset]:
+    def _build_dataset(self, split: str, dataset_cfg: DictConfig = None) -> Optional[torch.utils.data.Dataset]:
+        dataset_cfg = dataset_cfg if dataset_cfg else self.root_cfg.dataset
+
+        kwargs = {}
+        # if 'error' in dataset_cfg._name:
+        #     assert self.algo is not None, "Algorithm must be built before building prediction dataset"
+        #     kwargs['model'] = self.algo
+        #     kwargs['original_dataloader'] = self._build_loader(split, dataset_cfg=dataset_cfg.original_dataset, shuffle=False)
+        #     kwargs['root_dir'] = self.config_mapping.get_value(self.algo.original_algo)
+
         if split in ["training", "test", "validation"]:
-            return self.compatible_datasets[self.root_cfg.dataset._name](self.root_cfg.dataset, split=split)
+            # TODO: get root_dir from original algo
+            return self.compatible_datasets[dataset_cfg._name](dataset_cfg, split=split, **kwargs)
         else:
             raise NotImplementedError(f"split '{split}' is not implemented")
+
+    # def _build_config_mapping(self):
+    #     """
+    #     Build the configuration mapping for the experiment. Only for prediction datasets
+    #     """
+    #     self.config_mapping = ConfigMapping.load_from_json(self.cfg.config_mapping_path)
