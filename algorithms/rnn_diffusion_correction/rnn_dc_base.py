@@ -19,11 +19,10 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 from utils.logging_utils import get_validation_metrics_for_states
 from .models.diffusion_transition import DiffusionCorrectionransitionModel
-from ..rnn.models.rnn_unet import RNN_UNet
 
 
 class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, original_algo: BasePytorchAlgo, cfg: DictConfig):
         self.cfg = cfg
         self.x_shape = cfg.x_shape
         self.z_shape = cfg.z_shape
@@ -42,27 +41,22 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         self.sampling_timesteps = cfg.diffusion.sampling_timesteps
         self.validation_step_outputs = []
         self.min_crps_sum = float("inf")
-        self.learnable_init_z = cfg.learnable_init_z
         self.correction_size = cfg.correction_size
 
         super().__init__(cfg)
+        self.original_algo = original_algo
+        self.original_algo.eval()
+        for param in self.original_algo.parameters():
+            param.requires_grad = False
 
     def _build_model(self):
         self.transition_model = DiffusionCorrectionransitionModel(
             self.x_stacked_shape, self.z_shape, self.external_cond_dim, self.cfg.diffusion
         )
-        # TODO: add original algo
-        self.original_algo = RNN_UNet(
-            self.x_stacked_shape, self.z_shape, self.external_cond_dim, self.cfg.original_rnn
-        )
         self.register_data_mean_std(self.cfg.data_mean, self.cfg.data_std)
-        # if self.learnable_init_z:
-        #     self.init_z = nn.Parameter(torch.randn(list(self.z_shape)), requires_grad=True)
 
     def configure_optimizers(self):
         transition_params = list(self.transition_model.parameters())
-        if self.learnable_init_z:
-            transition_params.append(self.init_z)
         optimizer_dynamics = torch.optim.AdamW(
             transition_params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay, betas=self.cfg.optimizer_beta
         )
@@ -79,8 +73,9 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             for pg in optimizer.param_groups:
                 pg["lr"] = lr_scale * self.cfg.lr
 
-    def _preprocess_batch(self, batch):
-        _, (pred_xs, zs) = self.original_algo.validation_step(batch, 0, return_prediction=True)
+    def _preprocess_batch(self, batch, get_zs=True):
+        if get_zs:
+            _, (pred_xs, _, zs) = self.original_algo.validation_step(batch, 0, return_prediction=True, save_z=True)
 
         xs = batch[0]
         batch_size, n_frames = xs.shape[:2]
@@ -103,11 +98,23 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             conditions = [None for _ in range(n_frames)]
 
         # pred_xs already normalized ? and in the same shape as xs
-        xs = self._normalize_x(xs)
-        xs = rearrange(xs, "b (t fs) c ... -> t b (fs c) ...", fs=self.frame_stack).contiguous()
+        xs = self._normalize_x(xs)    
 
-        residuals = xs - pred_xs
-        return xs, pred_xs, residuals, zs, conditions, masks
+        # Remove first frame since we use it as ground truth
+        xs = rearrange(xs, "b (t fs) c ... -> t b (fs c) ...", fs=self.frame_stack).contiguous()
+        if get_zs:
+            xs = xs[1:]
+            pred_xs = rearrange(pred_xs, "(t fs) b c ... -> t b (fs c) ...", fs=self.frame_stack).contiguous()
+            masks = masks[self.frame_stack:]
+            residuals = xs - pred_xs
+            return xs, pred_xs, residuals, zs, conditions, masks
+
+        if self.original_algo.learnable_init_z:
+            init_z = self.original_algo.init_z[None].expand(batch_size, *self.z_shape)
+        else:
+            init_z = torch.zeros(batch_size, *self.z_shape)
+            init_z = init_z.to(xs.device)
+        return xs, conditions, masks, init_z
 
     def reweigh_loss(self, loss, weight=None):
         loss = rearrange(loss, "t b (fs c) ... -> t b fs c ...", fs=self.frame_stack)
@@ -145,6 +152,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        org_xs_pred = rearrange(org_xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
 
         output_dict = {
             "loss": loss,
@@ -161,34 +169,36 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             # repeat batch for crps sum for time series prediction
             batch = [d[None].expand(self.calc_crps_sum, *([-1] * len(d.shape))).flatten(0, 1) for d in batch]
 
-        xs, org_xs_pred, residuals, zs, conditions, masks = self._preprocess_batch(batch)
+        xs, conditions, masks, init_z = self._preprocess_batch(batch, get_zs=False)
 
         n_frames, batch_size, *_ = xs.shape
-        xs_pred = []
+        xs_pred = [xs[0]]
         xs_pred_all = []
-        org_xs_pred = []
+        org_xs_pred = [xs[0]]
 
-        # context
+        # TODO: check: do we need to do context first
         n_context = self.context_frames // self.frame_stack
-        for t in range(0, n_context):
-            x_next_pred, z = self.original_algo.roll_1_step(
-                x=xs[t],
-                z=z,
-                external_cond=conditions[t],
-                t=t,
-                x_self_cond=False
-            )
-            org_xs_pred.append(x_next_pred)
+        n_context = 0
+        z = init_z
+        # for t in range(0, n_context):
+        #     x_next_pred, z = self.original_algo.roll_1_step(
+        #         x=xs[t],
+        #         z=z,
+        #         condition=conditions[t],
+        #         t=t
+        #     )
+        #     org_xs_pred.append(x_next_pred)
 
         t = n_context
         # prediction
+
         while len(xs_pred) < n_frames - n_context:
             generation_chunk_size = min(self.correction_size, n_frames - len(xs_pred))
             ts = [t + i for i in range(generation_chunk_size)]
 
             chunk_org_xs_pred, chunk_zs = self.original_algo.rollout(
-                first_x=xs_pred[-1],
-                init_z=z,
+                first_x=xs_pred[-1], # (b, (fs c), h, w)
+                init_z=z, # (b, c_z, z_dim, z_dim)
                 ts=ts,
                 conditions=conditions[t:t + generation_chunk_size],
             )
@@ -199,15 +209,18 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
             org_xs_pred += chunk_org_xs_pred
 
-            # get residuals from diffusion    
+            # get residuals from diffusion
             residual_pred = self.transition_model.ddim_sample(
-                chunk_org_xs_pred.shape, 
-                z_cond=chunk_zs, 
+                chunk_org_xs_pred.shape, # (b, t, (fs c), h, w)
+                z_cond=chunk_zs, # (b, t, c_z, z_dim, z_dim)
                 external_cond=conditions[t:t + generation_chunk_size],
                 return_all_timesteps=False
             )
-            xs_pred = residual_pred + chunk_org_xs_pred
+            chunk_xs_pred = residual_pred + chunk_org_xs_pred
+            xs_pred += chunk_xs_pred
             xs_pred_all += xs_pred
+
+            t += generation_chunk_size
 
             # TODO: do we need to feed new pred into transition model again to get posterior z_chunk? 
 

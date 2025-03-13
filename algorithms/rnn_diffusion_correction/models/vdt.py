@@ -391,7 +391,8 @@ class CrossAttnVDTBlock(nn.Module):
         n_frames: number of frames in the sequence
         """
         # Diffusion time, condition using AdaLN-Zero
-        shift_self, scale_self, gate_self, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).chunk(6, dim=1)
+        
+        shift_self, scale_self, gate_self, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).chunk(6, dim=-1)
         T = n_frames
         K, N, M = x.shape
         B = K // T

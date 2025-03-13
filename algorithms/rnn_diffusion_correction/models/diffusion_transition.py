@@ -272,7 +272,7 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
     def model_predictions(self, x, t, z_cond, external_cond=None, x_self_cond=None) -> ModelPrediction:
         #z_next = self.model(x, t, z_cond, external_cond, x_self_cond)
-        model_output = self.model(x, t, z_cond, external_cond, x_self_cond)
+        model_output = self.model(x, z_cond, t) #TODO: add external_cond, x_self_cond
 
         if self.objective == "pred_noise":
             pred_noise = torch.clamp(model_output, -self.clip_noise, self.clip_noise)
@@ -331,7 +331,7 @@ class DiffusionCorrectionransitionModel(nn.Module):
     # @torch.no_grad()
     def ddim_sample(self, shape, z_cond, external_cond=None, return_all_timesteps=False):
         batch, device, total_timesteps, sampling_timesteps, eta = (
-            shape[1], #TODO: 0 or 1 ??
+            shape[0],
             self.betas.device,
             self.num_timesteps,
             self.sampling_timesteps,
@@ -350,13 +350,14 @@ class DiffusionCorrectionransitionModel(nn.Module):
         x_start = None
 
         for time, time_next in time_pairs:
+            # print(time, time_next)
             time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             #TODO: edit here, no return z
             model_pred = self.model_predictions(
                 x, time_cond, z_cond, external_cond=external_cond, x_self_cond=self_cond
             )
-            pred_noise, x_start, pred_z, _ = model_pred
+            pred_noise, x_start, _ = model_pred
 
             if time_next < 0:
                 x = x_start
@@ -378,7 +379,7 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
         ret = x if not return_all_timesteps else xs
 
-        return ret, pred_z
+        return ret
 
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))

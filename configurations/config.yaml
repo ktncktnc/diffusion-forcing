@@ -14,3 +14,7 @@ wandb:
 
 resume: null # wandb run id to resume logging and loading checkpoint from
 load: null # wanmdb run id containing checkpoint or a path to a checkpoint file
+
+hydra:
+  run:
+    dir: outputs/${hydra.runtime.choices.dataset}-fs${algorithm.frame_stack}/${hydra.runtime.choices.algorithm}/${now:%Y-%m-%d}/${now:%H-%M-%S}

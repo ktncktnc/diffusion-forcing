@@ -61,7 +61,7 @@ def log_video(
             observation_1[:context_frames, :, i, [0, -1], :] = c
             observation_1[:context_frames, :, i, :, [0, -1]] = c
             observation_2[:, :, i, [0, -1], :] = c
-            observation_2[:, :, i, :, [0, -1]] = c
+            observation_2[:, :, i, :, [0, -1]] = c   
         
     video = torch.cat([observation_1, observation_2], -1).detach().cpu().numpy()
     video = np.transpose(np.clip(video, a_min=0.0, a_max=1.0) * 255, (1, 0, 2, 3, 4)).astype(np.uint8)

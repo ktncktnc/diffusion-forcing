@@ -1,8 +1,11 @@
 defaults:
   - rnn_dc_base
-  - rnn_video@original_model
+  - rnn_video@original_algo
 
-frame_stack: ${algorithm.original_model.frame_stack} # 4 for dmlab, 8 for minecraft
+original_algo:
+  _name: rnn_video
+
+frame_stack: ${algorithm.original_algo.frame_stack} # 4 for dmlab, 8 for minecraft
 weight_decay: 2e-3 # 1e-3 for dmlab, bigger for minecraft
 warmup_steps: 5000
 gt_first_frame: 0.0
@@ -16,7 +19,7 @@ diffusion:
   objective: pred_v
   use_snr: True
   use_cum_snr: True
-  network_size: 48 # 48 for dmlab, 64 for minecraft
+  # network_size: 48 # 48 for dmlab, 64 for minecraft
   num_gru_layers: 1
   sampling_timesteps: 100
   ddim_sampling_eta: 0.0

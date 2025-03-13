@@ -25,3 +25,10 @@
         / h_0 (View as class)
         / Causal (Cross-attention)
         / Full (Cross-attention)
+
+
+=====================================================================================================================
+13/03/2025
+- Generate longer, faster w.o sacrifying accuracy:physic
+- Time
+-Sampler

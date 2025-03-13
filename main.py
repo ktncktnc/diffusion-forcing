@@ -31,7 +31,6 @@ def run_local(cfg: DictConfig):
     # Get yaml names
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
     cfg_choice = OmegaConf.to_container(hydra_cfg.runtime.choices)
-
     with open_dict(cfg):
         if cfg_choice["experiment"] is not None:
             cfg.experiment._name = cfg_choice["experiment"]
@@ -51,8 +50,7 @@ def run_local(cfg: DictConfig):
     if cfg.wandb.mode != "disabled":
         # If resuming, merge into the existing run on wandb.
         resume = cfg.get("resume", None)
-        name = f"{cfg.name} ({output_dir.parent.name}/{output_dir.name})" if resume is None else None
-
+        name = f"{cfg.dataset._name}-nf{cfg.dataset.n_frames}-fs{cfg.algorithm.frame_stack}_{cfg.algorithm._name} ({output_dir.parent.name}/{output_dir.name})" if resume is None else None
         if "_on_compute_node" in cfg and cfg.cluster.is_compute_node_offline:
             logger_cls = OfflineWandbLogger
         else:
@@ -68,7 +66,7 @@ def run_local(cfg: DictConfig):
             log_model="all" if not offline else False,
             config=OmegaConf.to_container(cfg),
             id=resume,
-        )
+        ) 
     else:
         logger = None
 

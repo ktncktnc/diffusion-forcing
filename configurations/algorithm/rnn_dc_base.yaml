@@ -1,14 +1,18 @@
 defaults:
   - base_pytorch_algo
-  - rnn_base@original_model
+  - rnn_base@original_algo
 
-x_shape: ${algorithm.original_model.x_shape}
-z_shape: ${algorithm.original_model.z_shape}
-frame_stack: ${algorithm.original_model.frame_stack}
+original_algo:
+  ckpt_path: ""
+  
+x_shape: ${algorithm.original_algo.x_shape}
+z_shape: ${algorithm.original_algo.z_shape}
+frame_stack: ${algorithm.original_algo.frame_stack}
 data_mean: ${dataset.data_mean}
 data_std: ${dataset.data_std}
 external_cond_dim: 0 #${dataset.action_dim}
 context_frames: ${dataset.context_length}
+correction_size: 4
 weight_decay: 1e-4
 warmup_steps: 2000
 gt_first_frame: 0.0
@@ -23,6 +27,10 @@ diffusion:
   network_size: 32
   beta_schedule: cosine
   objective: pred_x0
+  patch_size: 2
+  hidden_size: 144
+  num_heads: 8
+  depth: 12
   use_snr: False
   use_cum_snr: False
   snr_clip: 5.0
@@ -33,7 +41,7 @@ diffusion:
   p2_loss_weight_gamma: 0
   p2_loss_weight_k: 1
   schedule_fn_kwargs: {}
-  sampling_timesteps: 50  # fixme, numer of diffusion steps, should be increased
+  sampling_timesteps: 50  # TODO fixme, numer of diffusion steps, should be increased
   mask_unet: False
   num_gru_layers: 1
   num_mlp_layers: 0

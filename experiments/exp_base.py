@@ -35,6 +35,7 @@ class BaseExperiment(ABC):
 
     # each key has to be a yaml file under '[project_root]/configurations/algorithm' without .yaml suffix
     compatible_algorithms: Dict = NotImplementedError
+    need_original_algo: List[str] = []
 
     def __init__(
         self,
@@ -70,6 +71,27 @@ class BaseExperiment(ABC):
                 "Make sure you define compatible_algorithms correctly and make sure that each key has "
                 "same name as yaml file under '[project_root]/configurations/algorithm' without .yaml suffix"
             )
+        
+        # Load original algo
+        if algo_name in self.need_original_algo:
+            original_algo_name = self.root_cfg.algorithm.original_algo._name
+            if original_algo_name not in self.compatible_algorithms:
+                raise ValueError(
+                    f"Original Algorithm {original_algo_name} not found in compatible_algorithms for this Experiment class. "
+                    "Make sure you define compatible_algorithms correctly and make sure that each key has "
+                    "same name as yaml file under '[project_root]/configurations/algorithm' without .yaml suffix"
+                )
+            
+            original_algo = self.compatible_algorithms[original_algo_name].load_from_checkpoint(
+                self.root_cfg.algorithm.original_algo.ckpt_path,
+                cfg=self.root_cfg.algorithm.original_algo    
+            ) 
+
+            return self.compatible_algorithms[algo_name](
+                original_algo=original_algo,
+                cfg=self.root_cfg.algorithm
+            )
+
         return self.compatible_algorithms[algo_name](self.root_cfg.algorithm)
 
     def exec_task(self, task: str) -> None:
@@ -107,7 +129,6 @@ class BaseLightningExperiment(BaseExperiment):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Only build the config mapping for error datasets
-        self._build_config_mapping()
 
     def _build_trainer_callbacks(self):
         callbacks = []

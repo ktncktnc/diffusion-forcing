@@ -1,5 +1,0 @@
-defaults:
-  - base_prediction_dataset
-  - base_video@original_dataset
-
-on_the_fly: True

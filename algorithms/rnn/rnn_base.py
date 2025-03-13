@@ -144,58 +144,6 @@ class RNNBase(BasePytorchAlgo):
 
         return loss.mean()
 
-    def training_step(self, batch, batch_idx):
-        # training step for dynamics
-        xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
-
-        n_frames, batch_size, _, *_ = xs.shape
-        n_context = self.context_frames // self.frame_stack
-
-        xs_pred = []
-        loss = []
-        z = init_z
-
-        for t in range(0, n_frames-1):
-            x_next, z_next, l = self.transition_model(
-                x=xs[t],
-                x_next=xs[t + 1],
-                z_cond=z,
-                external_cond=conditions[t],
-                t=t,
-                x_self_cond=False
-            )
-            z = z_next
-            xs_pred.append(x_next)
-            loss.append(l)
-
-        xs_pred = torch.stack(xs_pred)
-        loss = torch.stack(loss)
-
-        # remove mask for the first frame
-        masks = masks[self.frame_stack:]
-        xs = xs[n_context:]
-
-        x_loss = self.reweigh_loss(loss, masks)
-        loss = x_loss
-
-        if batch_idx % 20 == 0:
-            self.log_dict(
-                {
-                    "training/loss": loss,
-                    "training/x_loss": x_loss,
-                }
-            )
-        xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
-        xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
-
-        output_dict = {
-            "loss": loss,
-            "xs_pred": self._unnormalize_x(xs_pred),
-            "xs": self._unnormalize_x(xs),
-        }
-
-        return output_dict
-    
     @torch.no_grad()
     def rollout(self, first_x, init_z, ts, conditions):
         """
@@ -218,12 +166,11 @@ class RNNBase(BasePytorchAlgo):
         x = first_x
 
         for i, t in enumerate(ts):
-            x_next, z_next, _ = self.roll_1_step(
+            x_next, z_next = self.roll_1_step(
                 x=x,
-                z_cond=z,
-                external_cond=conditions[i],
+                z=z,
+                condition=conditions[i],
                 t=t,
-                x_self_cond=False
             )
             z = z_next
             x = x_next
@@ -247,6 +194,57 @@ class RNNBase(BasePytorchAlgo):
         )
         return x_next, z_next
 
+    def training_step(self, batch, batch_idx):
+        # training step for dynamics
+        xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
+
+        n_frames, batch_size, _, *_ = xs.shape
+        # n_context = self.context_frames // self.frame_stack
+
+        xs_pred = []
+        loss = []
+        z = init_z
+
+        for t in range(0, n_frames-1):
+            x_next, z_next, l = self.transition_model(
+                x=xs[t],
+                x_next=xs[t + 1],
+                z_cond=z,
+                external_cond=conditions[t],
+                t=t,
+                x_self_cond=False
+            )
+            z = z_next
+            xs_pred.append(x_next)
+            loss.append(l)
+
+        xs_pred = torch.stack(xs_pred)
+        loss = torch.stack(loss)
+
+        # remove mask for the first frame
+        masks = masks[self.frame_stack:] # mask is not stacked => remove first stacked frame by frame_stack
+        xs = xs[1:]
+
+        x_loss = self.reweigh_loss(loss, masks)
+        loss = x_loss
+
+        if batch_idx % 20 == 0:
+            self.log_dict(
+                {
+                    "training/loss": loss,
+                    "training/x_loss": x_loss,
+                }
+            )
+        xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+
+        output_dict = {
+            "loss": loss,
+            "xs_pred": self._unnormalize_x(xs_pred),
+            "xs": self._unnormalize_x(xs),
+        }
+
+        return output_dict
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, return_prediction=False, save_z=False, namespace="validation"):
@@ -268,14 +266,7 @@ class RNNBase(BasePytorchAlgo):
         # context
         n_context = self.context_frames // self.frame_stack
         for t in range(0, n_context):
-            x_next_pred, z, _ = self.transition_model(
-                x=xs[t],
-                x_next=None,
-                z_cond=z,
-                external_cond=conditions[t],
-                t=t,
-                x_self_cond=False
-            )
+            x_next_pred, z = self.roll_1_step(xs[t], z, conditions[t], t)
             xs_pred.append(x_next_pred)
             zs.append(z)
 
@@ -299,15 +290,14 @@ class RNNBase(BasePytorchAlgo):
             zs.append(z)
 
             t+=1
-
         xs_pred = torch.stack(xs_pred)
-        # using first frame as groundtruth => remove first frame
+        zs = torch.stack(zs)
+        # using n_context frame as groundtruth => remove n_context frame
         xs = xs[n_context:]
         loss = F.mse_loss(xs_pred, xs, reduction="none")
         # remove mask for the first frame
-        masks = masks[self.frame_stack:]
+        masks = masks[self.frame_stack*n_context:]
         loss = self.reweigh_loss(loss, masks)
-
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
 
@@ -343,7 +333,10 @@ class RNNBase(BasePytorchAlgo):
             self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
 
         if return_prediction:
-            return loss, (xs_pred, xs)
+            if save_z:
+                return loss, (xs_pred, xs, zs)
+            else:
+                return loss, (xs_pred, xs)
         
         return loss
 

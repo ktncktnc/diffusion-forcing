@@ -10,12 +10,13 @@ from algorithms.common.metrics import (
     FrechetVideoDistance,
 )
 from utils.logging_utils import log_video, get_validation_metrics_for_videos
+from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 
 
-class RNN_DiffusionForcingVideo(RNN_DiffusionCorrectionBase):
-    def __init__(self, cfg: DictConfig):
+class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
+    def __init__(self, original_algo: BasePytorchAlgo, cfg: DictConfig):
         self.metrics = cfg.metrics
-        super().__init__(cfg)
+        super().__init__(original_algo, cfg)
 
     def _build_model(self):
         super()._build_model()
@@ -26,13 +27,17 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionCorrectionBase):
 
     def training_step(self, batch, batch_idx):
         output_dict = super().training_step(batch, batch_idx)
+        
+        # print('xs_pred:', output_dict["xs_pred"].shape)
+        # print('xs:', output_dict["xs"].shape)
+        # print('org_xs_pred:', output_dict["org_xs_pred"].shape)
 
-        if batch_idx % 5000 == 0 and self.logger is not None:
+        if batch_idx % 2500 == 0 and self.logger is not None:
             log_video(
                 output_dict["xs_pred"],
                 output_dict["xs"],
                 step=self.global_step,
-                namespace="training_vis",
+                namespace="training_vis_vs_org",
                 logger=self.logger.experiment,
             )
             log_video(
@@ -61,23 +66,24 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionCorrectionBase):
         org_xs_pred = torch.cat(org_xs_pred, 1)
         xs = torch.cat(xs, 1)
 
-        log_video(
-            xs_pred,
-            xs,
-            step=None if namespace == "test" else self.global_step,
-            namespace=namespace + "_vis",
-            context_frames=self.context_frames,
-            logger=self.logger.experiment,
-        )
-        log_video(
-            xs_pred,
-            org_xs_pred,
-            step=None if namespace == "test" else self.global_step,
-            namespace=namespace + "_vis",
-            context_frames=self.context_frames,
-            logger=self.logger.experiment,
-            add_red_border=False
-        )
+        if self.logger is not None:
+            log_video(
+                xs_pred,
+                xs,
+                step=None if namespace == "test" else self.global_step,
+                namespace=namespace + "_vis",
+                context_frames=self.context_frames,
+                logger=self.logger.experiment,
+            )
+            log_video(
+                xs_pred,
+                org_xs_pred,
+                step=None if namespace == "test" else self.global_step,
+                namespace=namespace + "_vis_vs_org",
+                context_frames=self.context_frames,
+                logger=self.logger.experiment,
+                add_red_border=False
+            )
 
         metric_dict = get_validation_metrics_for_videos(
             xs_pred[self.context_frames :],

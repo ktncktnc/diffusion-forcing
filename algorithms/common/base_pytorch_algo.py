@@ -86,13 +86,13 @@ class BasePytorchAlgo(pl.LightningModule, ABC):
         """
         return super().training_step(*args, **kwargs)
 
-    def configure_optimizers(self):
-        """
-        Return an optimizer. If you need to use more than one optimizer, refer to pytorch lightning documentation:
-        https://lightning.ai/docs/pytorch/stable/common/optimization.html
-        """
-        parameters = self.parameters()
-        return torch.optim.Adam(parameters, lr=self.cfg.lr)
+    # def configure_optimizers(self):
+    #     """
+    #     Return an optimizer. If you need to use more than one optimizer, refer to pytorch lightning documentation:
+    #     https://lightning.ai/docs/pytorch/stable/common/optimization.html
+    #     """
+    #     parameters = self.parameters()
+    #     return torch.optim.Adam(parameters, lr=self.cfg.lr)
 
     def log_video(
         self,

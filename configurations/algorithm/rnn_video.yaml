@@ -1,7 +1,7 @@
 defaults:
   - rnn_base
 
-z_shape: [16, "${dataset.resolution}", "${dataset.resolution}"] # 16 for dmlab, 32 for minecraft
+z_shape: [4, "${dataset.resolution}", "${dataset.resolution}"] # 16 for dmlab, 32 for minecraft
 frame_stack: 4 # 4 for dmlab, 8 for minecraft
 weight_decay: 2e-3 # 1e-3 for dmlab, bigger for minecraft
 warmup_steps: 5000

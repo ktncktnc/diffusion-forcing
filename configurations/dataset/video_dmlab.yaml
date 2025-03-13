@@ -1,6 +1,7 @@
 defaults:
   - base_video
 
+_name: video_dmlab
 save_dir: data/dmlab
 n_frames: 16 # TODO: increase later
 resolution: 64
