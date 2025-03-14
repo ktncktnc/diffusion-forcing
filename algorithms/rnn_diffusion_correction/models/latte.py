@@ -8,7 +8,7 @@ from einops import rearrange, repeat
 from typing import Any, Dict, Optional, Tuple
 from diffusers.models import Transformer2DModel
 from diffusers.utils import USE_PEFT_BACKEND, BaseOutput, deprecate
-from diffusers.models.embeddings import get_1d_sincos_pos_embed_from_grid, ImagePositionalEmbeddings, PixArtAlphaTextProjection, PatchEmbed, PixArtAlphaCombinedTimestepSizeEmbeddings 
+from diffusers.models.embeddings import get_1d_sincos_pos_embed_from_grid, ImagePositionalEmbeddings, PixArtAlphaTextProjection, PatchEmbed, PixArtAlphaCombinedTimestepSizeEmbeddings
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.attention import BasicTransformerBlock
@@ -310,6 +310,10 @@ class BasicTransformerBlock_(nn.Module):
         # 2. Prepare GLIGEN inputs
         cross_attention_kwargs = cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
         gligen_kwargs = cross_attention_kwargs.pop("gligen", None)
+
+        if self.only_cross_attention:
+            print('norm_hs', norm_hidden_states.shape)
+            print('enc_hs', encoder_hidden_states.shape)
 
         attn_output = self.attn1(
             norm_hidden_states,
@@ -770,7 +774,6 @@ class LatteT2V(ModelMixin, ConfigMixin):
             height, width = hidden_states.shape[-2] // self.patch_size, hidden_states.shape[-1] // self.patch_size
             num_patches = height * width
 
-            print('hidden_states', hidden_states.shape)
             hidden_states = self.pos_embed(hidden_states) # alrady add positional embeddings
 
             if self.adaln_single is not None:
@@ -802,6 +805,9 @@ class LatteT2V(ModelMixin, ConfigMixin):
         timestep_spatial = repeat(timestep, 'b d -> (b f) d', f=frame + use_image_num).contiguous()
         timestep_temp = repeat(timestep, 'b d -> (b p) d', p=num_patches).contiguous()
 
+        print('hidden_states', hidden_states.shape)
+        print('encoder_hidden_states', encoder_hidden_states.shape)
+        print('encoder_hidden_states_spatial', encoder_hidden_states_spatial.shape)
         for i, (spatial_block, temp_block) in enumerate(zip(self.transformer_blocks, self.temporal_transformer_blocks)):
 
             if self.training and self.gradient_checkpointing:
@@ -947,85 +953,95 @@ class LatteT2V(ModelMixin, ConfigMixin):
     
 
 
-
-# Add this at the end of the file after all class definitions
-
 if __name__ == "__main__":
-    import time
+    # Simple test for LatteT2V model
+    print("Testing LatteT2V model...")
     
-    # Function to print tensors with their shapes
-    def print_tensor_info(name, tensor):
-        if isinstance(tensor, torch.Tensor):
-            print(f"{name}: shape={tensor.shape}, dtype={tensor.dtype}")
-        else:
-            print(f"{name}: {tensor}")
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     
-    print("\n===== LatteT2V Model Shape Test =====\n")
+    # Model parameters from the provided config
+    config = {
+        "activation_fn": "gelu-approximate",
+        "attention_bias": True,
+        "attention_head_dim": 72,
+        "caption_channels": 4096,
+        "cross_attention_dim": 1152,
+        "dropout": 0.0,
+        "in_channels": 4,
+        "norm_elementwise_affine": False,
+        "norm_eps": 1e-06,
+        "norm_type": "ada_norm_single",
+        "num_attention_heads": 16,
+        "num_embeds_ada_norm": 1000,
+        "num_layers": 28,
+        "out_channels": 8,
+        "patch_size": 2,
+        "sample_size": 64
+    }
     
-    # Hard-coded parameters
-    batch_size = 2
-    channels = 4
-    frames = 16
-    height = 32
-    width = 32
-    patch_size = 2
+    # For testing, reduce num_layers to make it faster
+    test_num_layers = 2
+    video_length = 16
     
-    # Create a model instance
+    print("Creating model with configuration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    print(f"  video_length: {video_length}")
+    print(f"  test_num_layers: {test_num_layers} (reduced from {config['num_layers']} for testing)")
+    
+    # Create model instance
     model = LatteT2V(
-        num_attention_heads=8,
-        attention_head_dim=64,
-        in_channels=channels,
-        num_layers=2,
-        patch_size=patch_size,
-        sample_size=height,  # Assuming square frames
-        video_length=frames,
-        cross_attention_dim=768,  # Typical text embedding dimension
-        norm_type="layer_norm"
-    )
+        num_attention_heads=config["num_attention_heads"],
+        attention_head_dim=config["attention_head_dim"],
+        in_channels=config["in_channels"],
+        out_channels=config["out_channels"],
+        patch_size=config["patch_size"],
+        sample_size=config["sample_size"],
+        video_length=video_length,
+        num_layers=test_num_layers,  # Using fewer layers for testing
+        caption_channels=config["caption_channels"],
+        cross_attention_dim=config["cross_attention_dim"],
+        dropout=config["dropout"],
+        activation_fn=config["activation_fn"],
+        attention_bias=config["attention_bias"],
+        norm_elementwise_affine=config["norm_elementwise_affine"],
+        norm_eps=config["norm_eps"],
+        norm_type=config["norm_type"],
+        num_embeds_ada_norm=config["num_embeds_ada_norm"],
+        only_cross_attention=True
+    ).to(device)
     
-    # Print model parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Model created with {total_params:,} parameters")
+    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
     
-    # Create dummy inputs
-    video = torch.randn(batch_size, frames, channels, height, width)
-    timestep = torch.tensor([900, 900])  # Dummy timestep vector
-    text_embeds = torch.randn(batch_size, 77, 768)  # 77 is typical CLIP token count
+    # Create random input tensors
+    batch_size = 2
+    inner_dim = config["num_attention_heads"] * config["attention_head_dim"]
+    timestep = torch.randint(0, config["num_embeds_ada_norm"], (batch_size,)).to(device)  # Use timestep as integers for ada_norm_single
+    hidden_states = torch.randn(batch_size, config["in_channels"], video_length, config["sample_size"], config["sample_size"]).to(device)
+    encoder_hidden_states = torch.randn(batch_size, 77, config["caption_channels"]).to(device)
     
-    print("\n===== Input Tensors =====")
-    print_tensor_info("video", video)
-    print_tensor_info("timestep", timestep)
-    print_tensor_info("text_embeds", text_embeds)
+    print(f"Input shape: {hidden_states.shape}")
+    print(f"Timestep shape: {timestep.shape}")
+    print(f"Encoder hidden states shape: {encoder_hidden_states.shape}")
     
-    print("\n===== Processing =====")
-    # Set to evaluation mode
-    model.eval()
-    
-    # Forward pass with timing
-    with torch.no_grad():
-        start_time = time.time()
-        
-        output = model(
-            hidden_states=video,
-            timestep=timestep,
-            encoder_hidden_states=text_embeds,
-            enable_temporal_attentions=True
-        ).sample
-        
-        end_time = time.time()
-    
-    print(f"Forward pass completed in {end_time - start_time:.4f} seconds")
-    
-    print("\n===== Output Tensor =====")
-    print_tensor_info("output", output)
-    
-    # Check if output shape matches input
-    if output.shape == video.shape:
-        print("\n✅ Success: Output shape matches input shape")
-    else:
-        print("\n❌ Error: Output shape does not match input shape")
-        print(f"Expected: {video.shape}, Got: {output.shape}")
-    
-    print("\n===== Shape Flow Summary =====")
-    print(f"Input:  [B={batch_size}, C={channels}, F={frames}, H={height}, W={width}]")
-    print(f"Output: {list(output.shape)}")
+    # Forward pass
+    try:
+        with torch.no_grad():
+            output = model(
+                hidden_states=hidden_states,
+                timestep=timestep,
+                encoder_hidden_states=encoder_hidden_states,
+            )
+            
+        print(f"Output shape: {output.sample.shape}")
+        expected_output_shape = (batch_size, config["out_channels"], video_length, config["sample_size"], config["sample_size"])
+        print(f"Expected output shape: {expected_output_shape}")
+        assert output.sample.shape == expected_output_shape, "Output shape doesn't match expected shape"
+        print("Test complete! Model is working as expected.")
+    except Exception as e:
+        print(f"Error during model execution: {e}")
+        import traceback
+        traceback.print_exc()
+

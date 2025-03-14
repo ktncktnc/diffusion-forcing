@@ -75,6 +75,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
     def _preprocess_batch(self, batch, get_zs=True):
         if get_zs:
+            # # TODO: currently generate whole zs => change to fix frames, random start
             _, (pred_xs, _, zs) = self.original_algo.validation_step(batch, 0, return_prediction=True, save_z=True)
 
         xs = batch[0]

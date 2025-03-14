@@ -18,6 +18,7 @@ import torch.nn as nn
 import numpy as np
 import math
 import collections
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from typing import Type
 from functools import partial
 from timm.layers.helpers import to_2tuple
@@ -192,6 +193,23 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self._reshape_for_multihead = lambda x: rearrange(x, 'b n (h d) -> b h n d', h=self.num_heads)
+        self.cpu_backends = [
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.MATH,
+            SDPBackend.EFFICIENT_ATTENTION,
+        ]
+
+        device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
+
+        if device_properties.major >= 8 and device_properties.minor == 0:
+            # A100 GPU
+            self.cuda_backends = [SDPBackend.FLASH_ATTENTION]
+        else:
+            # Non-A100 GPU
+            self.cuda_backends = [
+                SDPBackend.MATH,
+                SDPBackend.EFFICIENT_ATTENTION,
+            ]
 
     def forward(
         self, 
@@ -210,14 +228,29 @@ class Attention(nn.Module):
         q= self.q_norm(q) # (B, H, N_q, D)
         k = self.k_norm(k) # (B, H, N_k, D)
 
-        x = F.scaled_dot_product_attention(
-            query=q,
-            key=k,
-            value=v,
-            dropout_p=self.attn_drop,
-            attn_mask=mask,
-            scale=self.scale,
+        backends = (
+            (
+                [SDPBackend.MATH]
+                if q.shape[0] >= 65536
+                else (
+                    self.cuda_backends
+                    if mask is None
+                    else [SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]
+                )
+            )
+            if q.is_cuda
+            else self.cpu_backends
         )
+        q, k, v = map(lambda t: t.contiguous(), (q, k, v))
+        with sdpa_kernel(backends=backends):
+            x = F.scaled_dot_product_attention(
+                query=q,
+                key=k,
+                value=v,
+                dropout_p=self.attn_drop,
+                attn_mask=mask,
+                scale=self.scale,
+            )
 
         x = rearrange(x, 'b h n d -> b n (h d)')
         x = self.proj(x)

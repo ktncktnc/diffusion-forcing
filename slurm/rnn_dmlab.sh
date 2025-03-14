@@ -6,7 +6,7 @@
 #SBATCH --qos=batch-short
 #SBATCH --job-name=rnn_dmlab
 #SBATCH --output=./logs/rnn_dmlab.out
-#BATCH --error=./logs/error/rnn_dmlab.err
+#SBATCH --error=./logs/error/rnn_dmlab.err
 #SBATCH --time=120:00:00
 
 # Initialize conda first
@@ -22,9 +22,9 @@ cd /scratch/s224075134/temporal_diffusion/diffusion-forcing/
 # Main script
 python -m main +name=rnn_dmlab_video \
         algorithm=rnn_video experiment=exp_video dataset=video_dmlab algorithm.model.num_gru_layers=0 algorithm.frame_stack=1 \
-        algorithm.weight_decay=1e-4 algorithm.model.network_size=32 algorithm.z_shape=[2,128,128]\
+        algorithm.weight_decay=1e-4 algorithm.model.network_size=24 algorithm.z_shape=[1,64,64]\
         dataset.context_length=4 dataset.n_frames=24 dataset.frame_skip=1 \
-        experiment.training.max_steps=1304297 experiment.training.lr=2e-4 experiment.training.batch_size=8
+        experiment.training.max_steps=1363360 experiment.training.lr=2e-4 experiment.training.batch_size=8 \
 
 # Resume script, train until done
 # python -m main +name=rnn_dmlab_video algorithm=rnn_video experiment=exp_video dataset=video_dmlab algorithm.model.num_gru_layers=0 dataset.context_length=4 dataset.n_frames=36 dataset.frame_skip=1 resume=yne5na9o experiment.training.max_steps=1304297 wandb.mode=disabled

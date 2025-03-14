@@ -288,14 +288,14 @@ class RNNBase(BasePytorchAlgo):
             z = z_next
             xs_pred.append(x_next)
             zs.append(z)
-
             t+=1
+            
         xs_pred = torch.stack(xs_pred)
         zs = torch.stack(zs)
         # using n_context frame as groundtruth => remove n_context frame
         xs = xs[n_context:]
         loss = F.mse_loss(xs_pred, xs, reduction="none")
-        # remove mask for the first frame
+        # remove mask for the n_context frame, mask is not stacked
         masks = masks[self.frame_stack*n_context:]
         loss = self.reweigh_loss(loss, masks)
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)

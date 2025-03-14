@@ -7,8 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .unet import TransitionUnet, TransitionMlp
-from .resnet import ResBlock2d
 from .vdt import VDT
 from .utils import extract, default, linear_beta_schedule, cosine_beta_schedule, sigmoid_beta_schedule
 
