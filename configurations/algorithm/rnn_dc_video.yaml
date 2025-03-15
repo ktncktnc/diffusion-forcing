@@ -1,6 +1,7 @@
 defaults:
   - rnn_dc_base
   - rnn_video@original_algo
+  - backbone: unet3d
 
 original_algo:
   _name: rnn_video

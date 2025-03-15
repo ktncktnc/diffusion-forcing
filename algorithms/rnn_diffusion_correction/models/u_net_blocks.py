@@ -183,7 +183,6 @@ class Attention(nn.Module):
             else self.cpu_backends
         )
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
-
         with sdpa_kernel(backends=backends):
             # pylint: disable=E1102
             hidden_states = F.scaled_dot_product_attention(
@@ -346,7 +345,7 @@ class CrossAttentionBlock(nn.Module):
         context: torch.Tensor,
         is_causal: bool = False,
         attn_mask: Optional[torch.Tensor] = None,
-    ):
+    ): 
         return x + self.attn(self.norm(x), v=context, k=context, is_causal=is_causal, attn_mask=attn_mask)
     
 

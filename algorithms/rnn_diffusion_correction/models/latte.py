@@ -1013,7 +1013,48 @@ if __name__ == "__main__":
         only_cross_attention=True
     ).to(device)
     
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    # Count parameters by module
+    param_counts = {}
+    for name, module in model.named_modules():
+        if len(list(module.parameters())) > 0:  # Only consider modules with parameters
+            params = sum(p.numel() for p in module.parameters())
+            if params > 0:  # Only include modules with parameters
+                param_counts[name] = params
+    
+    # Sort modules by parameter count
+    sorted_counts = sorted(param_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    print("\n=== MODEL PARAMETER COUNTS ===")
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    
+    print("\n=== TOP 10 LARGEST MODULES ===")
+    for name, count in sorted_counts[:10]:
+        print(f"{name}: {count:,} parameters ({count/total_params*100:.2f}%)")
+    
+    # Calculate parameters by model component
+    transformer_block_params = sum(p.numel() for n, p in model.named_parameters() if "transformer_blocks" in n)
+    temporal_block_params = sum(p.numel() for n, p in model.named_parameters() if "temporal_transformer_blocks" in n)
+    projection_params = sum(p.numel() for n, p in model.named_parameters() if any(x in n for x in ["proj_in", "proj_out", "caption_projection"]))
+    other_params = total_params - transformer_block_params - temporal_block_params - projection_params
+    
+    print("\n=== PARAMETERS BY COMPONENT ===")
+    print(f"Spatial transformer blocks: {transformer_block_params:,} ({transformer_block_params/total_params*100:.2f}%)")
+    print(f"Temporal transformer blocks: {temporal_block_params:,} ({temporal_block_params/total_params*100:.2f}%)")
+    print(f"Projection layers: {projection_params:,} ({projection_params/total_params*100:.2f}%)")
+    print(f"Other parameters: {other_params:,} ({other_params/total_params*100:.2f}%)")
+    
+    # Estimate full model size
+    full_model_factor = config["num_layers"] / test_num_layers
+    estimated_full_params = int(total_params * full_model_factor)
+    
+    print(f"\nEstimated parameters for full model ({config['num_layers']} layers): {estimated_full_params:,}")
+    print(f"Estimated model size in memory (FP32): {estimated_full_params*4/1024/1024:.2f} MB")
+    print(f"Estimated model size in memory (FP16): {estimated_full_params*2/1024/1024:.2f} MB")
     
     # Create random input tensors
     batch_size = 2
@@ -1022,7 +1063,7 @@ if __name__ == "__main__":
     hidden_states = torch.randn(batch_size, config["in_channels"], video_length, config["sample_size"], config["sample_size"]).to(device)
     encoder_hidden_states = torch.randn(batch_size, 77, config["caption_channels"]).to(device)
     
-    print(f"Input shape: {hidden_states.shape}")
+    print(f"\nInput shape: {hidden_states.shape}")
     print(f"Timestep shape: {timestep.shape}")
     print(f"Encoder hidden states shape: {encoder_hidden_states.shape}")
     

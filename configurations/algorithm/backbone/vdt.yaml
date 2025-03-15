@@ -1,0 +1,9 @@
+name: vdt
+patch_size: 2
+hidden_size: 1152
+depth: 8
+num_heads: 4
+mlp_ratio: 4.0
+num_frames: 16
+is_causal_crossattn: True
+is_causal_selfattn: True

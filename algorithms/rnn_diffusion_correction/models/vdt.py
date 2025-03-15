@@ -506,62 +506,72 @@ class VDT(nn.Module):
     """
     def __init__(
         self,
+        cfg,
         input_size=32,
-        patch_size=2,
         in_channels=4,
         z_channels=4,
-        hidden_size=1152,
-        depth=28,
-        num_heads=16,
-        mlp_ratio=4.0,
-        num_frames=16,
-        is_causal_crossattn=True,
-        is_causal_selfattn=True
+        # patch_size=2,
+        # hidden_size=1152,
+        # depth=28,
+        # num_heads=16,
+        # mlp_ratio=4.0,
+        # num_frames=16,
+        # is_causal_crossattn=True,
+        # is_causal_selfattn=True,
+        # **kwargs
     ):
         super().__init__()
+        self.cfg = cfg
+        self.input_size = input_size
         self.in_channels = in_channels
         self.out_channels = in_channels
-        self.patch_size = patch_size
-        self.num_heads = num_heads
+        self.hidden_size = cfg.hidden_size
+        self.cond_channels = z_channels
+        self.num_frames = cfg.get('num_frames', 32)
+        self.depth = cfg.depth
+        self.mlp_ratio = cfg.mlp_ratio
 
-        self.is_causal_crossattn = is_causal_crossattn
-        self.is_causal_selfattn = is_causal_selfattn
+        self.patch_size = cfg.patch_size
+        self.num_heads = cfg.num_heads
+
+        self.is_causal_crossattn = cfg.is_causal_crossattn
+        self.is_causal_selfattn = cfg.is_causal_selfattn
 
         # Tokenizers
-        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
-        self.diffusion_t_embedder = TimestepEmbedder(hidden_size)
+        self.x_embedder = PatchEmbed(input_size, self.patch_size, in_channels, self.hidden_size, bias=True)
+        self.diffusion_t_embedder = TimestepEmbedder(self.hidden_size)
         num_patches = self.x_embedder.num_patches
 
         # Z embedding
-        self.z_channels = z_channels
-        self.z_embedding = ZtoVDTConvAdapter(
-            input_channels=z_channels,
-            hidden_size=hidden_size
+        self.cond_channels = self.cond_channels
+        self.cond_embedding = ZtoVDTConvAdapter(
+            input_channels=self.cond_channels,
+            hidden_size=self.hidden_size
         )
 
         # Spatial positional embeddings
         # Will use fixed sin-cos embedding:
-        self.spatial_pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
+        self.spatial_pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.hidden_size), requires_grad=False)
         
         # Temporal positional embeddings
-        self.num_frames = num_frames
-        self.temporal_frame_embed = nn.Parameter(torch.zeros(1, num_frames, hidden_size), requires_grad=False)
+        self.num_frames = self.num_frames
+        self.temporal_frame_embed = nn.Parameter(torch.zeros(1, self.num_frames, self.hidden_size), requires_grad=False)
         self.temporal_frame_drop = nn.Dropout(p=0)
 
         self.blocks = nn.ModuleList([
             CrossAttnVDTBlock(
-                hidden_size=hidden_size, 
-                num_heads=num_heads,
-                mlp_ratio=mlp_ratio, 
+                hidden_size=self.hidden_size, 
+                num_heads=self.num_heads,
+                mlp_ratio=self.mlp_ratio, 
                 is_causal_crossattn=self.is_causal_crossattn, 
                 is_causal_selfattn=self.is_causal_selfattn
             ) 
-            for _ in range(depth)
+            for _ in range(self.depth)
         ])
         self.final_layer = FinalLayer(
-            hidden_size, 
-            num_heads, 
-            patch_size, 
+            self.hidden_size, 
+            self.num_heads, 
+            self.patch_size, 
             self.out_channels,
             is_causal_crossattn=self.is_causal_crossattn
         )
@@ -620,7 +630,7 @@ class VDT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, z, t):
+    def forward(self, x, cond, t):
         """
         Forward pass of VDT.
         x: (B, T, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -647,12 +657,12 @@ class VDT(nn.Module):
         t = self.diffusion_t_embedder(t) # (B, D)
 
         # Z embedding
-        z = self.z_embedding(z) # (B, T, D)
+        cond = self.cond_embedding(cond) # (B, T, D)
 
         for block in self.blocks:
-            x = block(x, z, t, T) # ((B,T), N, D)
+            x = block(x, cond, t, T) # ((B,T), N, D)
 
-        x = self.final_layer(x, z, t, T) # (N, T, patch_size ** 2 * out_channels)
+        x = self.final_layer(x, cond, t, T) # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x) # (N, out_channels, H, W)
         x = x.view(B, T, x.shape[-3], x.shape[-2], x.shape[-1])
         return x

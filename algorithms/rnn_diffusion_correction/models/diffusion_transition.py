@@ -6,8 +6,9 @@ from collections import namedtuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import Dict
 from .vdt import VDT
+from .u_net3d import Unet3D
 from .utils import extract, default, linear_beta_schedule, cosine_beta_schedule, sigmoid_beta_schedule
 
 
@@ -15,6 +16,10 @@ ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start", "
 
 
 class DiffusionCorrectionransitionModel(nn.Module):
+    backbones: Dict[str, nn.Module] = {
+        "unet3d": Unet3D,
+        "vdt": VDT,
+    }
     def __init__(self, x_shape, z_shape, external_cond_dim, cfg):
         super().__init__()
         self.cfg = cfg
@@ -52,16 +57,47 @@ class DiffusionCorrectionransitionModel(nn.Module):
         z_channel = self.z_shape[0]
         self.model = None
         if len(self.x_shape) == 3:
-            self.model = VDT(
+            backbone = self.backbones[self.cfg.backbone.name]
+            self.model = backbone(
+                cfg=self.cfg.backbone,
                 input_size=self.x_shape[-1],
-                patch_size=self.cfg.patch_size,
-                in_channels=self.x_shape[0],
-                z_channels=self.z_shape[0],
-                hidden_size=self.cfg.hidden_size,
-                depth=self.cfg.depth,
-                num_heads=self.cfg.num_heads,
-                num_frames=64
+                in_channels=x_channel,
+                z_channels=z_channel,
             )
+            # if backbone == 'vdt':
+            #     self.model = VDT(
+            #         input_size=self.x_shape[-1],
+            #         patch_size=self.cfg.patch_size,
+            #         in_channels=self.x_shape[0],
+            #         z_channels=self.z_shape[0],
+            #         hidden_size=self.cfg.hidden_size,
+            #         depth=self.cfg.depth,
+            #         num_heads=self.cfg.num_heads,
+            #         num_frames=64
+            #     )
+            # elif backbone == 'unet3d':
+            #     self.model = Unet3D(
+            #         input_size=self.x_shape[-1],
+            #         in_channels=self.x_shape[0],
+            #         z_channels=self.z_shape[0],
+            #         init_hidden_channels=self.cfg.hidden_size,
+            #         dim_mults=self.cfg.dim_mults,
+            #         num_res_blocks=self.cfg.num_res_blocks,
+            #         resnet_block_groups=self.cfg.resnet_block_groups,        
+            #         attn_resolutions=self.cfg.attn_resolutions,
+            #         attn_heads=self.cfg.attn_heads,
+            #         attn_head_dim=self.cfg.attn_head_dim,
+            #         use_linear_attn=self.cfg.use_linear_attn,
+            #         use_init_temporal_attn=self.cfg.use_init_temporal_attn,
+            #         init_kernel_size=self.cfg.init_kernel_size,
+            #         dropout=0.0,
+            #         is_causal_selfattn=self.cfg.is_causal_selfattn,
+            #         is_causal_crossattn=self.cfg.is_causal_crossattn,
+            #         use_fourier_noise_embedding=self.cfg.use_fourier_noise_embedding,
+            #         use_fourier_cond_embedding=self.cfg.use_fourier_cond_embedding,
+            #     )
+            # else:
+            #     raise ValueError(f"unknown backbone {backbone}")
 
         elif len(self.x_shape) == 1:
             # self.model = TransitionMlp(
