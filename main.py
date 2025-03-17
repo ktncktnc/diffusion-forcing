@@ -51,7 +51,7 @@ def run_local(cfg: DictConfig):
     if cfg.wandb.mode != "disabled":
         # If resuming, merge into the existing run on wandb.
         resume = cfg.get("resume", None)
-        name = f"{cfg.dataset._name}-nf{cfg.dataset.n_frames}-fs{cfg.algorithm.frame_stack}_{cfg.algorithm._name} ({output_dir.parent.name}/{output_dir.name})" if resume is None else None
+        name = f"{cfg.dataset._name}-nf{cfg.dataset.n_frames}-fs{cfg.algorithm.frame_stack}_{cfg.algorithm._name}_{cfg.name} ({output_dir.parent.name}/{output_dir.name})" if resume is None else None
         if "_on_compute_node" in cfg and cfg.cluster.is_compute_node_offline:
             logger_cls = OfflineWandbLogger
         else:

@@ -194,8 +194,9 @@ class Unet(nn.Module):
         self.external_cond_dim = external_cond_dim
         input_channels = channels * (2 if self_condition else 1)
         input_channels += z_cond_dim if z_cond_dim else 0
-
+        print("input_channels", input_channels)
         init_dim = default(init_dim, dim)
+        print("init_dim", init_dim)
         self.init_conv = nn.Conv2d(input_channels, init_dim, 7, padding=3)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]

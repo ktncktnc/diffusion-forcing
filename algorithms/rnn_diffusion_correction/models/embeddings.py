@@ -84,12 +84,8 @@ class StochasticTimeEmbedding(nn.Module):
         self.embedding = TimestepEmbedding(dim, time_embed_dim)
 
     def forward(self, timesteps: torch.Tensor, mask: Optional[torch.Tensor] = None):
-        return self.embedding(
-            self.timesteps(timesteps)
-            if self.use_fourier
-            else self.timesteps(timesteps, mask)
-        )
-
+        emb = self.timesteps(timesteps.float()) if self.use_fourier else self.timesteps(timesteps.float(), mask)
+        return self.embedding(emb)
 
 
 class ZtoVDTConvAdapter(nn.Module):
@@ -107,16 +103,17 @@ class ZtoVDTConvAdapter(nn.Module):
             nn.ReLU(),
             nn.AdaptiveAvgPool2d((1, 1))  # Global average pooling
         )
-        # self.time_embed = StochasticTimeEmbedding(
-        #     dim=hidden_size,
-        #     time_embed_dim=hidden_size,
-        #     use_fourier=use_fourier,
-        #     p=p
-        # )
-        self.temporal_embed = get_timestep_embedding(
-            torch.arange(0, 10000),
-            hidden_size
-        ).unsqueeze(0)
+
+        max_timesteps = 1000
+        self.temporal_embed = nn.Embedding(max_timesteps, hidden_size)
+        # Initialize the embedding weights with sinusoidal encoding
+        with torch.no_grad():
+            position_ids = torch.arange(max_timesteps)
+            sinusoidal_embed = get_timestep_embedding(
+                position_ids, 
+                hidden_size
+            )
+            self.temporal_embed.weight.copy_(sinusoidal_embed)
         
         # Final projection to get to z_size
         self.projection = nn.Linear(hidden_size, hidden_size)
@@ -127,7 +124,7 @@ class ZtoVDTConvAdapter(nn.Module):
         z_conv = self.conv(z_rnn)  # Shape: (B*T, hidden_size, 1, 1)
         z_vdt = z_conv.flatten(1)  # Shape: (B*T, hidden_size)
         z_vdt = rearrange(z_vdt, '(b t) d -> b t d', b=B, t=T)
-        z_vdt = z_vdt + self.temporal_embed[:, :T]
+        z_vdt = z_vdt + self.temporal_embed(torch.arange(T, device=z_vdt.device))
         z_vdt = self.projection(z_vdt)  # Shape: (B*T, hidden_size)         
         return z_vdt
     

@@ -67,9 +67,22 @@ def cast_tuple(t, length=1):
 
 
 def extract(a, t, x_shape):
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+    if len(t.shape) == 1:
+        b, *_ = t.shape
+        out = a.gather(-1, t)
+    elif len(t.shape) == 2:
+        b, n = t.shape
+        t_flat = t.reshape(-1)
+        out = a.gather(-1, t_flat)
+        out = out.reshape(b, n)
+    
+    if len(t.shape) == 1:
+        return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+    else:
+        # For 2D case, maintain the second dimension
+        reshape_dims = [1] * (len(x_shape) - 2)  # -2 instead of -1 to account for n
+        return out.reshape(b, n, *reshape_dims)
+    # return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
 
 def linear_beta_schedule(timesteps):

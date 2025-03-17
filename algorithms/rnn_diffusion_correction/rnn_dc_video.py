@@ -27,24 +27,20 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
 
     def training_step(self, batch, batch_idx):
         output_dict = super().training_step(batch, batch_idx)
-        
-        # print('xs_pred:', output_dict["xs_pred"].shape)
-        # print('xs:', output_dict["xs"].shape)
-        # print('org_xs_pred:', output_dict["org_xs_pred"].shape)
 
-        if batch_idx % 2500 == 0 and self.logger is not None:
+        if batch_idx % 500 == 0 and self.logger is not None:
             log_video(
                 output_dict["xs_pred"],
                 output_dict["xs"],
                 step=self.global_step,
-                namespace="training_vis_vs_org",
+                namespace="training_vis",
                 logger=self.logger.experiment,
             )
             log_video(
                 output_dict["xs_pred"],
                 output_dict["org_xs_pred"],
-                namespace="training_vis",
-                context_frames=self.context_frames,
+                namespace="training_vis_vs_org",
+                # context_frames=self.context_frames,
                 logger=self.logger.experiment,
                 add_red_border=False
             )
@@ -72,7 +68,6 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
                 xs,
                 step=None if namespace == "test" else self.global_step,
                 namespace=namespace + "_vis",
-                context_frames=self.context_frames,
                 logger=self.logger.experiment,
             )
             log_video(
@@ -80,7 +75,6 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
                 org_xs_pred,
                 step=None if namespace == "test" else self.global_step,
                 namespace=namespace + "_vis_vs_org",
-                context_frames=self.context_frames,
                 logger=self.logger.experiment,
                 add_red_border=False
             )

@@ -156,12 +156,12 @@ class RNNBase(BasePytorchAlgo):
             n_frames (int): Number of frames to rollout
         
         Returns:
-            tuple: Contains:
+            tuple: Contains (not include first frame and init_z):
                 - xs_pred (Tensor): Predicted frames [n_frames, batch_size, ...]
                 - zs (list): Latent states for each frame
         """
         xs_pred = []
-        zs = [init_z]
+        zs = []
         z = init_z
         x = first_x
 
@@ -208,7 +208,7 @@ class RNNBase(BasePytorchAlgo):
         for t in range(0, n_frames-1):
             x_next, z_next, l = self.transition_model(
                 x=xs[t],
-                x_next=xs[t + 1],
+                x_next=xs[t+1],
                 z_cond=z,
                 external_cond=conditions[t],
                 t=t,
@@ -218,12 +218,12 @@ class RNNBase(BasePytorchAlgo):
             xs_pred.append(x_next)
             loss.append(l)
 
-        xs_pred = torch.stack(xs_pred)
+        xs_pred = torch.stack(xs_pred) # n_frames - 1 w.o. first frame
         loss = torch.stack(loss)
 
         # remove mask for the first frame
         masks = masks[self.frame_stack:] # mask is not stacked => remove first stacked frame by frame_stack
-        xs = xs[1:]
+        xs = xs[1:] # remove first frame to match
 
         x_loss = self.reweigh_loss(loss, masks)
         loss = x_loss
@@ -247,22 +247,20 @@ class RNNBase(BasePytorchAlgo):
         return output_dict
 
     @torch.no_grad()
-    def validation_step(self, batch, batch_idx, return_prediction=False, save_z=False, namespace="validation"):
+    def validation_step(self, batch, batch_idx, return_prediction=False, save=True, return_z=False, namespace="validation"):
         if self.calc_crps_sum:
             # repeat batch for crps sum for time series prediction
             batch = [d[None].expand(self.calc_crps_sum, *([-1] * len(d.shape))).flatten(0, 1) for d in batch]
-
+        
         xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
-
         n_frames, batch_size, *_ = xs.shape
-        xs_pred = []
         xs_pred_all = []
         z = init_z
         zs = [z]
 
-        # using first frame as ground truth, generate n-1 next frames
+        # using first frame as input, generate n-1 next frames
         # => only generate n-1 frames
-
+        xs_pred = [xs[0]]
         # context
         n_context = self.context_frames // self.frame_stack
         for t in range(0, n_context):
@@ -270,13 +268,10 @@ class RNNBase(BasePytorchAlgo):
             xs_pred.append(x_next_pred)
             zs.append(z)
 
-        # remove last hidden state
-        zs = zs[:-1]
-
         t = n_context
 
         # prediction
-        while len(xs_pred) < n_frames - n_context:
+        while len(xs_pred) < n_frames:
             x_next, z_next, _ = self.transition_model(
                 x=xs_pred[-1],
                 x_next=None,
@@ -293,8 +288,7 @@ class RNNBase(BasePytorchAlgo):
         xs_pred = torch.stack(xs_pred)
         zs = torch.stack(zs)
         # using n_context frame as groundtruth => remove n_context frame
-        xs = xs[n_context:]
-        loss = F.mse_loss(xs_pred, xs, reduction="none")
+        loss = F.mse_loss(xs_pred[n_context:], xs[n_context:], reduction="none")
         # remove mask for the n_context frame, mask is not stacked
         masks = masks[self.frame_stack*n_context:]
         loss = self.reweigh_loss(loss, masks)
@@ -327,13 +321,11 @@ class RNNBase(BasePytorchAlgo):
                     prog_bar=True,
                 )
 
-        if save_z:
-            self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu(), zs.cpu()))
-        else:
+        if save:
             self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
 
         if return_prediction:
-            if save_z:
+            if return_z:
                 return loss, (xs_pred, xs, zs)
             else:
                 return loss, (xs_pred, xs)

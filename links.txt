@@ -1,0 +1,13 @@
+video_dmlab-nf24-fs1_rnn_video (2025-03-14/04-50-30): https://wandb.ai/ktncktnc/diffusion-forcing/runs/p31ggs4d
+val: https://wandb.ai/ktncktnc/diffusion-forcing/runs/xvyunq9h?nw=nwuserktncktnc
+
+video_dmlab-nf24-fs1_rnn_dc_video (2025-03-16/16-01-01): https://wandb.ai/ktncktnc/diffusion-forcing/runs/bkri9ijs
+val: https://wandb.ai/ktncktnc/diffusion-forcing/runs/i4zbponz?nw=nwuserktncktnc
+
+video_dmlab-nf24-fs1_rnn_dc_video_no_random_start-(2025-03-16/18-15-02) -start at n_context: https://wandb.ai/ktncktnc/diffusion-forcing/runs/4mg6e5nu/overview
+
+video_dmlab-nf24-fs1_rnn_dc_video_no_random_start-(2025-03-16/18-15-02) -start at 0: 
+
+
+video_minecraft-nf16-fs1_rnn_video (2025-03-14/08-11-00): https://wandb.ai/ktncktnc/diffusion-forcing/runs/hugzb054/overview
+eval: https://wandb.ai/ktncktnc/diffusion-forcing/runs/5guqotn7

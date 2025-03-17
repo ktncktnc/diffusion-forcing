@@ -22,7 +22,7 @@ cd /scratch/s224075134/temporal_diffusion/diffusion-forcing/
 # Main script
 python -m main +name=rnn_dmlab_video \
         algorithm=rnn_video experiment=exp_video dataset=video_dmlab algorithm.model.num_gru_layers=0 algorithm.frame_stack=1 \
-        algorithm.weight_decay=1e-4 algorithm.model.network_size=24 algorithm.z_shape=[1,64,64]\
+        algorithm.weight_decay=1e-4 algorithm.model.network_size=24 algorithm.z_shape=[1,64,64] \
         dataset.context_length=4 dataset.n_frames=24 dataset.frame_skip=1 \
         experiment.training.max_steps=1363360 experiment.training.lr=2e-4 experiment.training.batch_size=8 \
 

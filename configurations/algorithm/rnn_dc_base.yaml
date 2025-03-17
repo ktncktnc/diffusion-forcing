@@ -12,7 +12,8 @@ data_mean: ${dataset.data_mean}
 data_std: ${dataset.data_std}
 external_cond_dim: 0 #${dataset.action_dim}
 context_frames: ${dataset.context_length}
-correction_size: 4
+random_start: true
+correction_size: 8
 weight_decay: 1e-4
 warmup_steps: 2000
 gt_first_frame: 0.0

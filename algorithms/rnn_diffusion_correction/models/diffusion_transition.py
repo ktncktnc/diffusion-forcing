@@ -20,9 +20,10 @@ class DiffusionCorrectionransitionModel(nn.Module):
         "unet3d": Unet3D,
         "vdt": VDT,
     }
-    def __init__(self, x_shape, z_shape, external_cond_dim, cfg):
+    def __init__(self, x_shape, z_shape, external_cond_dim, cfg, backbone_cfg):
         super().__init__()
         self.cfg = cfg
+        self.backbone_cfg = backbone_cfg
         self.x_shape = x_shape
         self.z_shape = z_shape
         self.external_cond_dim = external_cond_dim
@@ -57,47 +58,13 @@ class DiffusionCorrectionransitionModel(nn.Module):
         z_channel = self.z_shape[0]
         self.model = None
         if len(self.x_shape) == 3:
-            backbone = self.backbones[self.cfg.backbone.name]
+            backbone = self.backbones[self.backbone_cfg.name]
             self.model = backbone(
-                cfg=self.cfg.backbone,
+                cfg=self.backbone_cfg,
                 input_size=self.x_shape[-1],
                 in_channels=x_channel,
                 z_channels=z_channel,
             )
-            # if backbone == 'vdt':
-            #     self.model = VDT(
-            #         input_size=self.x_shape[-1],
-            #         patch_size=self.cfg.patch_size,
-            #         in_channels=self.x_shape[0],
-            #         z_channels=self.z_shape[0],
-            #         hidden_size=self.cfg.hidden_size,
-            #         depth=self.cfg.depth,
-            #         num_heads=self.cfg.num_heads,
-            #         num_frames=64
-            #     )
-            # elif backbone == 'unet3d':
-            #     self.model = Unet3D(
-            #         input_size=self.x_shape[-1],
-            #         in_channels=self.x_shape[0],
-            #         z_channels=self.z_shape[0],
-            #         init_hidden_channels=self.cfg.hidden_size,
-            #         dim_mults=self.cfg.dim_mults,
-            #         num_res_blocks=self.cfg.num_res_blocks,
-            #         resnet_block_groups=self.cfg.resnet_block_groups,        
-            #         attn_resolutions=self.cfg.attn_resolutions,
-            #         attn_heads=self.cfg.attn_heads,
-            #         attn_head_dim=self.cfg.attn_head_dim,
-            #         use_linear_attn=self.cfg.use_linear_attn,
-            #         use_init_temporal_attn=self.cfg.use_init_temporal_attn,
-            #         init_kernel_size=self.cfg.init_kernel_size,
-            #         dropout=0.0,
-            #         is_causal_selfattn=self.cfg.is_causal_selfattn,
-            #         is_causal_crossattn=self.cfg.is_causal_crossattn,
-            #         use_fourier_noise_embedding=self.cfg.use_fourier_noise_embedding,
-            #         use_fourier_cond_embedding=self.cfg.use_fourier_cond_embedding,
-            #     )
-            # else:
-            #     raise ValueError(f"unknown backbone {backbone}")
 
         elif len(self.x_shape) == 1:
             # self.model = TransitionMlp(
@@ -204,15 +171,15 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
         :return: z_next_pred, x_next_pred, loss(unreduced), cum_snr
         """
-        batch_size = z.shape[0]
+        B, T = z.shape[:2]
         if deterministic_t is None:
-            t = torch.randint(0, self.num_timesteps, (batch_size,), device=z.device).long()
+            t = torch.randint(0, self.num_timesteps, (B,T), device=z.device).long()
         elif isinstance(deterministic_t, float):
             deterministic_t = round(deterministic_t * (self.num_timesteps - 1))
-            t = torch.full((batch_size,), deterministic_t, device=z.device).long()
+            t = torch.full((B,), deterministic_t, device=z.device).long()
         elif isinstance(deterministic_t, int):
             deterministic_t = deterministic_t if deterministic_t >= 0 else self.timesteps + deterministic_t
-            t = torch.full((batch_size,), deterministic_t, device=z.device).long()
+            t = torch.full((B,), deterministic_t, device=z.device).long()
 
         # get noised version of x
         noise = torch.randn_like(x)
@@ -222,10 +189,10 @@ class DiffusionCorrectionransitionModel(nn.Module):
         x_self_cond = None
         if self.self_condition and random() < 0.5:
             with torch.no_grad():
-                x_self_cond = self.model_predictions(noised_x, t, z, external_cond=external_cond).pred_x_start
-                x_self_cond.detach_()
+                x_self_cond = self.model_predictions(noised_x, z, t, external_cond=external_cond).pred_x_start
+                x_self_cond.detach()
 
-        model_pred = self.model_predictions(noised_x, t, z, external_cond=external_cond, x_self_cond=x_self_cond)
+        model_pred = self.model_predictions(noised_x, z, t, external_cond=external_cond, x_self_cond=x_self_cond)
         x_pred = model_pred.pred_x_start
 
         pred = model_pred.model_out
@@ -241,36 +208,38 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
         loss = F.mse_loss(pred, target.detach(), reduction="none")
 
-        normalized_clipped_snr = self.clipped_snr[t] / self.snr_clip
-        normalized_snr = self.snr[t] / self.snr_clip
+        # normalized_clipped_snr = self.clipped_snr[t] / self.snr_clip
+        # normalized_snr = self.snr[t] / self.snr_clip
 
-        if cum_snr is None or not self.use_cum_snr:
-            cum_snr_next = normalized_clipped_snr
-            clipped_fused_snr = normalized_clipped_snr
-            fused_snr = normalized_snr
-        else:
-            cum_snr_next = cum_snr * self.cum_snr_decay + normalized_clipped_snr * (1 - self.cum_snr_decay)
-            clipped_fused_snr = 1 - (1 - cum_snr * self.cum_snr_decay) * (1 - normalized_clipped_snr)
-            fused_snr = 1 - (1 - cum_snr * self.cum_snr_decay) * (1 - normalized_snr)
+        # if cum_snr is None or not self.use_cum_snr:
+        #     cum_snr_next = normalized_clipped_snr
+        #     clipped_fused_snr = normalized_clipped_snr
+        #     fused_snr = normalized_snr
+        # else:
+        #     cum_snr_next = cum_snr * self.cum_snr_decay + normalized_clipped_snr * (1 - self.cum_snr_decay)
+        #     clipped_fused_snr = 1 - (1 - cum_snr * self.cum_snr_decay) * (1 - normalized_clipped_snr)
+        #     fused_snr = 1 - (1 - cum_snr * self.cum_snr_decay) * (1 - normalized_snr)
 
-        if self.use_snr:
-            if self.objective == "pred_noise":
-                loss_weight = clipped_fused_snr / fused_snr
-            elif self.objective == "pred_x0":
-                loss_weight = clipped_fused_snr * self.snr_clip
-            elif self.objective == "pred_v":
-                loss_weight = clipped_fused_snr * self.snr_clip / (fused_snr * self.snr_clip + 1)
-            loss_weight = loss_weight.view(batch_size, *((1,) * (len(loss.shape) - 1)))
-        elif self.use_cum_snr and cum_snr is not None:
-            loss_weight = cum_snr * self.snr_clip
-            loss_weight = loss_weight.view(batch_size, *((1,) * (len(loss.shape) - 1)))
-        else:
-            loss_weight = torch.ones_like(loss)
-            loss_weight *= self.snr_clip * 0.5  # multiply by a constant so weight scale is similar to snr
+        # if self.use_snr:
+        #     if self.objective == "pred_noise":
+        #         loss_weight = clipped_fused_snr / fused_snr
+        #     elif self.objective == "pred_x0":
+        #         loss_weight = clipped_fused_snr * self.snr_clip
+        #     elif self.objective == "pred_v":
+        #         loss_weight = clipped_fused_snr * self.snr_clip / (fused_snr * self.snr_clip + 1)
 
-        loss = loss * loss_weight
+        #     loss_weight = loss_weight.view(B, *((1,) * (len(loss.shape) - 1)))
+        # elif self.use_cum_snr and cum_snr is not None:
+        #     loss_weight = cum_snr * self.snr_clip
+        #     loss_weight = loss_weight.view(B, *((1,) * (len(loss.shape) - 1)))
+        # else:
+        #     loss_weight = torch.ones_like(loss)
+        #     loss_weight *= self.snr_clip * 0.5  # multiply by a constant so weight scale is similar to snr
 
-        return x_pred, loss, cum_snr_next
+        # loss = loss * loss_weight
+
+        # return x_pred, loss, cum_snr_next
+        return x_pred, loss
 
     def predict_start_from_noise(self, x_t, t, noise):
         return (
@@ -304,9 +273,9 @@ class DiffusionCorrectionransitionModel(nn.Module):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def model_predictions(self, x, t, z_cond, external_cond=None, x_self_cond=None) -> ModelPrediction:
+    def model_predictions(self, x, z_cond, t, external_cond=None, x_self_cond=None) -> ModelPrediction:
         #z_next = self.model(x, t, z_cond, external_cond, x_self_cond)
-        model_output = self.model(x, z_cond, t) #TODO: add external_cond, x_self_cond
+        model_output = self.model(x, z_cond, t.float()) #TODO: add external_cond, x_self_cond
 
         if self.objective == "pred_noise":
             pred_noise = torch.clamp(model_output, -self.clip_noise, self.clip_noise)
@@ -364,8 +333,9 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
     # @torch.no_grad()
     def ddim_sample(self, shape, z_cond, external_cond=None, return_all_timesteps=False):
-        batch, device, total_timesteps, sampling_timesteps, eta = (
+        batch, timesteps, device, total_timesteps, sampling_timesteps, eta = (
             shape[0],
+            shape[1],
             self.betas.device,
             self.num_timesteps,
             self.sampling_timesteps,
@@ -385,11 +355,11 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
         for time, time_next in time_pairs:
             # print(time, time_next)
-            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
+            time_cond = torch.full((batch,timesteps), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             #TODO: edit here, no return z
             model_pred = self.model_predictions(
-                x, time_cond, z_cond, external_cond=external_cond, x_self_cond=self_cond
+                x, z_cond, time_cond, external_cond=external_cond, x_self_cond=self_cond
             )
             pred_noise, x_start, _ = model_pred
 
@@ -448,7 +418,7 @@ class DiffusionCorrectionransitionModel(nn.Module):
         time, time_next = time_pairs[index]
         time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
         self_cond = None
-        model_pred = self.model_predictions(x, time_cond, z_cond, external_cond=external_cond, x_self_cond=self_cond)
+        model_pred = self.model_predictions(x, z_cond, time_cond, external_cond=external_cond, x_self_cond=self_cond)
         pred_noise = model_pred.pred_noise
         x_start = model_pred.pred_x_start
         pred_z = model_pred.pred_z

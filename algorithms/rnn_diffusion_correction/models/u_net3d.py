@@ -48,6 +48,7 @@ class Unet3D(nn.Module):
         self.use_fourier_cond_embedding = cfg.use_fourier_cond_embedding
         self.use_init_temporal_attn = cfg.use_init_temporal_attn
         self.use_linear_attn = cfg.use_linear_attn
+        self.attn_resolutions = cfg.attn_resolutions
 
         self.dim_mults = cfg.dim_mults
         self.init_hidden_channels = cfg.init_hidden_channels
@@ -61,7 +62,7 @@ class Unet3D(nn.Module):
 
         resolution = input_size
         out_channel = in_channels
-        attn_resolutions = [resolution // res for res in list(attn_resolutions)]
+        self.attn_resolutions = [resolution // res for res in list(self.attn_resolutions)]
 
         dims = [self.init_hidden_channels, *map(lambda m: self.init_hidden_channels * m, self.dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
@@ -133,7 +134,7 @@ class Unet3D(nn.Module):
         curr_resolution = 1
         for idx, (dim_in, dim_out) in enumerate(in_out):
             is_last = idx == len(in_out) - 1
-            use_attn = curr_resolution in attn_resolutions
+            use_attn = curr_resolution in self.attn_resolutions
 
             self.down_blocks.append(
                 nn.ModuleList(
@@ -180,7 +181,7 @@ class Unet3D(nn.Module):
 
         for idx, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = idx == len(in_out) - 1
-            use_attn = curr_resolution in attn_resolutions
+            use_attn = curr_resolution in self.attn_resolutions
 
             self.up_blocks.append(
                 UnetSequentialCondition(
