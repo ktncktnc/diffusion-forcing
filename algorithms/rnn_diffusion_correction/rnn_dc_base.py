@@ -130,16 +130,21 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             zs = zs[:, start:end]
             masks = masks[start*self.frame_stack:end*self.frame_stack]
             conditions = conditions[start:end]
-    
-            residuals = xs - pred_xs
-            pred_xs = pred_xs
 
+            if self.cfg.target_type == "diff":
+                target = xs - pred_xs
+            elif self.cfg.target_type == "data":
+                target = xs
+            else:
+                raise ValueError("Invalid target_type")
+            
+            pred_xs = pred_xs
             if not batch_first:
                 xs = rearrange(xs, "b t (fs c) ... -> t b (fs c) ...", fs=self.frame_stack)
                 pred_xs = rearrange(pred_xs, "b t (fs c) ... -> t b (fs c) ...", fs=self.frame_stack)
-                residuals = rearrange(residuals, "b t (fs c) ... -> t b (fs c) ...", fs=self.frame_stack)
+                target = rearrange(target, "b t (fs c) ... -> t b (fs c) ...", fs=self.frame_stack)
                 zs = rearrange(zs, "b t ... -> t b ...")
-            return xs, pred_xs, residuals, zs, conditions, masks
+            return xs, pred_xs, target, zs, conditions, masks
         
         # For validation
         else:
@@ -165,12 +170,18 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
     def training_step(self, batch, batch_idx):
         # training step for dynamics
-        xs, org_xs_pred, residuals, zs, conditions, masks  = self._preprocess_batch(batch, batch_first=True) # (b, t, (fs c), h, w)
+        xs, org_xs_pred, target, zs, conditions, masks  = self._preprocess_batch(batch, batch_first=True) # (b, t, (fs c), h, w)
         # batch first
-        residual_pred, loss = self.transition_model(
-            zs, residuals, conditions, deterministic_t=None, cum_snr=None
+        pred_target, loss = self.transition_model(
+            zs, target, conditions, deterministic_t=None, cum_snr=None
         ) # (b, t, (fs c), h, w)
-        xs_pred = residual_pred + org_xs_pred # (b, t, (fs c), h, w)
+
+        if self.cfg.target_type == "diff":
+            xs_pred = pred_target + org_xs_pred # (b, t, (fs c), h, w)
+        elif self.cfg.target_type == "data":
+            xs_pred = pred_target
+        else:
+            raise ValueError("Invalid target_type")
 
         loss = rearrange(loss, "b t ... -> t b ...")
         x_loss = self.reweigh_loss(loss, masks)
@@ -241,14 +252,20 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             # batch first, reshape for diffusion model
             chunk_org_xs_pred = rearrange(chunk_org_xs_pred, "t b ... -> b t ...")
             # get residuals from diffusion
-            residual_pred = self.transition_model.ddim_sample(
+            pred_target = self.transition_model.ddim_sample(
                 chunk_org_xs_pred.shape, # (b, t, (fs c), h, w)
                 z_cond=rearrange(chunk_zs, 't b ... -> b t ...'), # (b, t, c_z, z_dim, z_dim)
                 external_cond=conditions[t:t + generation_chunk_size],
                 return_all_timesteps=False
             ) 
-
-            chunk_xs_pred = residual_pred + chunk_org_xs_pred # (b, t, (fs c), h, w)
+            
+            if self.cfg.target_type == "diff":
+                chunk_xs_pred = pred_target + chunk_org_xs_pred # (b, t, (fs c), h, w)
+            elif self.cfg.target_type == "data":
+                chunk_xs_pred = pred_target
+            else:
+                raise ValueError("Invalid target_type")
+            
             # timestep first
             xs_pred.extend(chunk_xs_pred.unbind(dim=1))
             xs_pred_all += xs_pred
@@ -275,38 +292,38 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         xs_pred = self._unnormalize_x(xs_pred)
         org_xs_pred = self._unnormalize_x(org_xs_pred)
 
-        if not self.is_spatial:
-            if self.transition_model.return_all_timesteps:
-                xs_pred_all = [torch.stack(item) for item in xs_pred_all]
+        # if not self.is_spatial:
+        #     if self.transition_model.return_all_timesteps:
+        #         xs_pred_all = [torch.stack(item) for item in xs_pred_all]
 
-                limit = self.transition_model.sampling_timesteps
-                for i in np.linspace(1, limit, 5, dtype=int):
-                    xs_pred = xs_pred_all[i]
-                    xs_pred = self._unnormalize_x(xs_pred)
-                    metric_dict = get_validation_metrics_for_states(xs_pred, xs)
+        #         limit = self.transition_model.sampling_timesteps
+        #         for i in np.linspace(1, limit, 5, dtype=int):
+        #             xs_pred = xs_pred_all[i]
+        #             xs_pred = self._unnormalize_x(xs_pred)
+        #             metric_dict = get_validation_metrics_for_states(xs_pred, xs)
 
-                    self.log_dict(
-                        {f"{namespace}/{i}_sampling_steps_{k}": v for k, v in metric_dict.items()},
-                        on_step=False,
-                        on_epoch=True,
-                        prog_bar=True,
-                    )
-            else:
-                metric_dict = get_validation_metrics_for_states(xs_pred, xs)
-                self.log_dict(
-                    {f"{namespace}/{k}": v for k, v in metric_dict.items()},
-                    on_step=False,
-                    on_epoch=True,
-                    prog_bar=True,
-                )
+        #             self.log_dict(
+        #                 {f"{namespace}/{i}_sampling_steps_{k}": v for k, v in metric_dict.items()},
+        #                 on_step=False,
+        #                 on_epoch=True,
+        #                 prog_bar=True,
+        #             )
+        #     else:
+        #         metric_dict = get_validation_metrics_for_states(xs_pred, xs)
+        #         self.log_dict(
+        #             {f"{namespace}/{k}": v for k, v in metric_dict.items()},
+        #             on_step=False,
+        #             on_epoch=True,
+        #             prog_bar=True,
+        #         )
 
-                org_metric_dict = get_validation_metrics_for_states(org_xs_pred, xs)
-                self.log_dict(
-                    {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()},
-                    on_step=False,
-                    on_epoch=True,
-                    prog_bar=True,
-                )
+        #         org_metric_dict = get_validation_metrics_for_states(org_xs_pred, xs)
+        #         self.log_dict(
+        #             {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()},
+        #             on_step=False,
+        #             on_epoch=True,
+        #             prog_bar=True,
+        #         )
 
         self.validation_step_outputs.append((xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
 

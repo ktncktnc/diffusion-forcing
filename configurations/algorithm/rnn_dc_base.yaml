@@ -13,6 +13,7 @@ data_std: ${dataset.data_std}
 external_cond_dim: 0 #${dataset.action_dim}
 context_frames: ${dataset.context_length}
 random_start: true
+target_type: data
 correction_size: 8
 weight_decay: 1e-4
 warmup_steps: 2000
