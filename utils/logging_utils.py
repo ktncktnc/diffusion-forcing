@@ -75,6 +75,64 @@ def log_video(
                 f"trainer/global_step": step,
             }
         )
+        
+
+def log_multiple_videos(
+    observations: List[torch.Tensor],
+    step=0,
+    namespace="train",
+    prefix="video",
+    context_frames=0,
+    color=(255, 0, 0),
+    logger=None,
+    add_red_border=True,
+):
+    """
+    take in video tensors in range [-1, 1] and log into wandb
+
+    :param observation_hat: predicted observation tensor of shape (frame, batch, channel, height, width)
+    :param observation_gt: ground-truth observation tensor of shape (frame, batch, channel, height, width)
+    :param step: an int indicating the step number
+    :param namespace: a string specify a name space this video logging falls under, e.g. train, val
+    :param prefix: a string specify a prefix for the video name
+    :param context_frames: an int indicating how many frames in observation_hat are ground truth given as context
+    :param color: a tuple of 3 numbers specifying the color of the border for ground truth frames
+    :param logger: optional logger to use. use global wandb if not specified
+    """
+    if not logger:
+        logger = wandb
+
+    if len(observations) == 1:
+        observations.append(torch.zeros_like(observations[0]))
+    
+    # Last one with be ground-truth
+    for i in range(len(observations-1)):
+        observations[i][:context_frames] = observations[-1][:context_frames]
+    
+    # Add red border of 1 pixel width to the context frames
+    if add_red_border:
+        for i, c in enumerate(color):
+            c = c / 255.0
+
+            for j in range(context_frames-1):
+                observations[j][:context_frames, :, i, [0, -1], :] = c
+                observations[j][:context_frames, :, i, :, [0, -1]] = c
+
+            observations[-1][:, :, i, [0, -1], :] = c
+            observations[-1][:, :, i, :, [0, -1]] = c   
+        
+    video = torch.cat(observations, -1).detach().cpu().numpy()
+    video = np.transpose(np.clip(video, a_min=0.0, a_max=1.0) * 255, (1, 0, 2, 3, 4)).astype(np.uint8)
+    # video[..., 1:] = video[..., :1]  # remove framestack, only visualize current frame
+    n_samples = len(video)
+    # use wandb directly here since pytorch lightning doesn't support logging videos yet
+    for i in range(n_samples):
+        logger.log(
+            {
+                f"{namespace}/{prefix}_{i}": wandb.Video(video[i], fps=24),
+                f"trainer/global_step": step,
+            }
+        )
 
 
 def get_validation_metrics_for_videos(

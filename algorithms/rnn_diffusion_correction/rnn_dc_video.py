@@ -35,14 +35,7 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
                 step=self.global_step,
                 namespace="training_vis",
                 logger=self.logger.experiment,
-            )
-            log_video(
-                output_dict["xs_pred"],
-                output_dict["org_xs_pred"],
-                namespace="training_vis_vs_org",
-                # context_frames=self.context_frames,
-                logger=self.logger.experiment,
-                add_red_border=False
+                add_red_border=True
             )
 
         return output_dict
@@ -63,20 +56,12 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
         xs = torch.cat(xs, 1)
 
         if self.logger is not None:
-            log_video(
-                xs_pred,
-                xs,
+            log_multiple_videos(
+                [xs_pred, org_xs_pred, xs],
                 step=None if namespace == "test" else self.global_step,
-                namespace=namespace + "_vis",
+                namespace=namespace + "_vis_all",
                 logger=self.logger.experiment,
-            )
-            log_video(
-                xs_pred,
-                org_xs_pred,
-                step=None if namespace == "test" else self.global_step,
-                namespace=namespace + "_vis_vs_org",
-                logger=self.logger.experiment,
-                add_red_border=False
+                add_red_border=True
             )
 
         metric_dict = get_validation_metrics_for_videos(
