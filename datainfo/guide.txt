@@ -1,0 +1,6 @@
+Edit OUTPUT_DIR
+
+Going to OAuth 2.0 Playground https://developers.google.com/oauthplayground/
+In the Select the Scope box, paste https://www.googleapis.com/auth/drive.readonly
+Click Authorize APIs and then Exchange authorization code for tokens
+Copy the Access token

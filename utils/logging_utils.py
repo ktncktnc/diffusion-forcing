@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 import wandb
 import numpy as np
 import torch
@@ -106,7 +106,7 @@ def log_multiple_videos(
         observations.append(torch.zeros_like(observations[0]))
     
     # Last one with be ground-truth
-    for i in range(len(observations-1)):
+    for i in range(len(observations)-1):
         observations[i][:context_frames] = observations[-1][:context_frames]
     
     # Add red border of 1 pixel width to the context frames

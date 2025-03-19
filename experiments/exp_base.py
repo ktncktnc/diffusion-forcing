@@ -82,10 +82,18 @@ class BaseExperiment(ABC):
                     "same name as yaml file under '[project_root]/configurations/algorithm' without .yaml suffix"
                 )
             
-            original_algo = self.compatible_algorithms[original_algo_name].load_from_checkpoint(
-                self.root_cfg.algorithm.original_algo.ckpt_path,
-                cfg=self.root_cfg.algorithm.original_algo    
-            ) 
+            # If has ckpt
+            if self.root_cfg.algorithm.original_algo.ckpt_path:
+                print(f"Loading original algo from {self.root_cfg.algorithm.original_algo.ckpt_path}")
+                original_algo = self.compatible_algorithms[original_algo_name].load_from_checkpoint(
+                    self.root_cfg.algorithm.original_algo.ckpt_path,
+                    cfg=self.root_cfg.algorithm.original_algo    
+                )
+            else:
+                print(f"Building original algo from scratch")
+                original_algo = self.compatible_algorithms[original_algo_name](
+                    cfg=self.root_cfg.algorithm.original_algo
+                )
 
             return self.compatible_algorithms[algo_name](
                 original_algo=original_algo,

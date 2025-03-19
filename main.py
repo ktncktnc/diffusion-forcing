@@ -64,9 +64,10 @@ def run_local(cfg: DictConfig):
             offline=offline,
             entity=cfg.wandb.entity,
             project=cfg.wandb.project,
-            log_model="all" if not offline else False,
+            # log_model="all" if not offline else False,
             config=OmegaConf.to_container(cfg),
             id=resume,
+            log_model=False
         ) 
     else:
         logger = None

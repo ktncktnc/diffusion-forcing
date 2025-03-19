@@ -4,7 +4,8 @@ defaults:
 tasks: [training]
 
 training:
-  lr: 8e-5
+  lr: 1e-4
+  original_algo_lr: 1e-5
   precision: 16-mixed
   batch_size: 4
   max_epochs: 1
@@ -18,7 +19,7 @@ training:
 validation:
   val_every_n_step: 5000
   val_every_n_epoch: null
-  batch_size: 8
+  batch_size: 16
   limit_batch: 1
 
 test:

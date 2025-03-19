@@ -3,7 +3,7 @@ from einops import rearrange
 import torch
 from omegaconf import DictConfig
 
-from .rnn_dc_base import RNN_DiffusionCorrectionBase
+from .joint_rnn_dc_base import JointRNN_DiffusionCorrectionBase
 from algorithms.common.metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,
@@ -13,7 +13,7 @@ from utils.logging_utils import log_video, log_multiple_videos, get_validation_m
 from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 
 
-class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
+class JointRNN_DiffusionCorrectionVideo(JointRNN_DiffusionCorrectionBase):
     def __init__(self, original_algo: BasePytorchAlgo, cfg: DictConfig):
         self.metrics = cfg.metrics
         super().__init__(original_algo, cfg)
@@ -63,27 +63,27 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
                 add_red_border=True
             )
 
-        metric_dict = get_validation_metrics_for_videos(
-            xs_pred[self.context_frames :],
-            xs[self.context_frames :],
-            lpips_model=self.validation_lpips_model,
-            fid_model=self.validation_fid_model,
-            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
-        )
-        self.log_dict(
-            {f"{namespace}/{k}": v for k, v in metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
-        )
+        # metric_dict = get_validation_metrics_for_videos(
+        #     xs_pred[self.context_frames :],
+        #     xs[self.context_frames :],
+        #     lpips_model=self.validation_lpips_model,
+        #     fid_model=self.validation_fid_model,
+        #     fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
+        # )
+        # self.log_dict(
+        #     {f"{namespace}/{k}": v for k, v in metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
+        # )
 
-        org_metric_dict = get_validation_metrics_for_videos(
-            org_xs_pred[self.context_frames :],
-            xs[self.context_frames :],
-            lpips_model=self.validation_lpips_model,
-            fid_model=self.validation_fid_model,
-            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
-        )
-        self.log_dict(
-            {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
-        )
+        # org_metric_dict = get_validation_metrics_for_videos(
+        #     org_xs_pred[self.context_frames :],
+        #     xs[self.context_frames :],
+        #     lpips_model=self.validation_lpips_model,
+        #     fid_model=self.validation_fid_model,
+        #     fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
+        # )
+        # self.log_dict(
+        #     {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
+        # )
 
         self.validation_step_outputs.clear()
 

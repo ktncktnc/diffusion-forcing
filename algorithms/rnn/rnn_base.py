@@ -144,7 +144,6 @@ class RNNBase(BasePytorchAlgo):
 
         return loss.mean()
 
-    @torch.no_grad()
     def rollout(self, first_x, init_z, ts, conditions):
         """
         Rollout the model for n_frames.
@@ -182,7 +181,6 @@ class RNNBase(BasePytorchAlgo):
 
         return xs_pred, zs
     
-    @torch.no_grad()
     def roll_1_step(self, x, z, condition, t):
         x_next, z_next, _ = self.transition_model(
             x=x,
@@ -193,6 +191,43 @@ class RNNBase(BasePytorchAlgo):
             x_self_cond=False
         )
         return x_next, z_next
+
+    def forward(self, batch, batch_idx, n_frames=None):
+        """
+        Generate n-1 frames given the first frame.
+        """
+        xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
+        xs_n_frames, batch_size, _, *_ = xs.shape
+        n_frames = n_frames or xs_n_frames
+
+        xs_pred = [xs[0]]
+        loss = []
+        z = init_z
+        zs = [z]
+
+        for t in range(0, n_frames-1):
+            x_next, z_next, _ = self.transition_model(
+                x=xs[t],
+                x_next=xs[t+1],
+                z_cond=z,
+                external_cond=conditions[t],
+                t=t,
+                x_self_cond=False
+            )
+            z = z_next
+            xs_pred.append(x_next)
+            zs.append(z)
+
+        xs_pred = torch.stack(xs_pred)
+        zs = torch.stack(zs)
+        
+        xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        xs = self._unnormalize_x(xs)
+        xs_pred = self._unnormalize_x(xs_pred)
+
+        return xs_pred, xs, zs
+
 
     def training_step(self, batch, batch_idx):
         # training step for dynamics
@@ -248,6 +283,9 @@ class RNNBase(BasePytorchAlgo):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, return_prediction=False, save=True, return_z=False, namespace="validation"):
+        """
+        Generate n-1 next frames given the first frame.
+        """
         if self.calc_crps_sum:
             # repeat batch for crps sum for time series prediction
             batch = [d[None].expand(self.calc_crps_sum, *([-1] * len(d.shape))).flatten(0, 1) for d in batch]

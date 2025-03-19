@@ -11,3 +11,7 @@ video_dmlab-nf24-fs1_rnn_dc_video_no_random_start-(2025-03-16/18-15-02) -start a
 
 video_minecraft-nf16-fs1_rnn_video (2025-03-14/08-11-00): https://wandb.ai/ktncktnc/diffusion-forcing/runs/hugzb054/overview
 eval: https://wandb.ai/ktncktnc/diffusion-forcing/runs/5guqotn7
+
+
+dc_rnn_dmlab-target_data-startat0-pred_v-885720: https://wandb.ai/ktncktnc/diffusion-forcing/runs/jjv8lr3j
+
