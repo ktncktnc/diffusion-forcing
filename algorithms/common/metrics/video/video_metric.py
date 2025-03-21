@@ -279,10 +279,7 @@ class VideoMetric(nn.Module):
         #     }
         # )
         for metric_type, module in self._filtered_items(self.VBENCH_METRICS, not_in=True):
-            print('metric_type', metric_type)
             output = module.compute()
-            print('output', output.shape)
-            print('frame_wise', hasattr(module, "frame_wise") and module.frame_wise)
             if (hasattr(module, "is_empty") and module.is_empty):
                 continue
 

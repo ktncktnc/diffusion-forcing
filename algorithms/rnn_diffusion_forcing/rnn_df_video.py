@@ -23,7 +23,6 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
 
     def _build_model(self):
         super()._build_model()
-        print('self.cfg.evaluation', self.cfg.evaluation)
         self.metrics = VideoMetric(
             metric_types=self.cfg.evaluation.metrics,
             frame_wise=self.cfg.evaluation.frame_wise,
