@@ -1,14 +1,11 @@
 import numpy as np
 from einops import rearrange
 import torch
+from typing import Any, Dict
 from omegaconf import DictConfig
-
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 from .rnn_dc_base import RNN_DiffusionCorrectionBase
-from algorithms.common.old_metrics import (
-    FrechetInceptionDistance,
-    LearnedPerceptualImagePatchSimilarity,
-    FrechetVideoDistance,
-)
+from algorithms.common.metrics.video import VideoMetric
 from utils.logging_utils import log_video, log_multiple_videos, get_validation_metrics_for_videos
 from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 
@@ -20,10 +17,11 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
 
     def _build_model(self):
         super()._build_model()
-
-        self.validation_fid_model = FrechetInceptionDistance(feature=64) if "fid" in self.metrics else None
-        self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity() if "lpips" in self.metrics else None
-        self.validation_fvd_model = [FrechetVideoDistance()] if "fvd" in self.metrics else None
+        self.metrics = VideoMetric(
+            metric_types=self.cfg.evaluation.metrics,
+            frame_wise=self.cfg.evaluation.frame_wise,
+            max_frames=self.cfg.evaluation.max_frames,
+        )
 
     def training_step(self, batch, batch_idx):
         output_dict = super().training_step(batch, batch_idx)
@@ -38,23 +36,22 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
             )
 
         return output_dict
+    
+    def on_validation_epoch_start(self) -> None:
+        if self.cfg.evaluation.seed is not None:
+            self.generator = torch.Generator(device=self.device).manual_seed(self.cfg.evaluation.seed)
 
-    def on_validation_epoch_end(self, namespace="validation"):
-        if not self.validation_step_outputs:
-            return
+    def validation_step(self, batch, batch_idx, namespace="validation"):
+        outputs = super().validation_step(batch, batch_idx, namespace)
+        xs_pred = outputs["xs_pred"]
+        org_xs_pred = outputs["org_xs_pred"]
+        xs = outputs["xs"]
 
-        xs_pred = []
-        org_xs_pred = []
-        xs = []
-        for pred, org_pred, gt in self.validation_step_outputs:
-            xs_pred.append(pred)
-            org_xs_pred.append(org_pred)
-            xs.append(gt)
-        xs_pred = torch.cat(xs_pred, 1)
-        org_xs_pred = torch.cat(org_xs_pred, 1)
-        xs = torch.cat(xs, 1)
+        # Calculate metrics
+        self.metrics(xs_pred, xs)
 
-        if self.logger is not None:
+        # log the video
+        if self.logger:
             log_multiple_videos(
                 [xs_pred, org_xs_pred, xs],
                 step=None if namespace == "test" else self.global_step,
@@ -63,32 +60,23 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
                 add_red_border=True
             )
 
-        metric_dict = get_validation_metrics_for_videos(
-            xs_pred[self.context_frames :],
-            xs[self.context_frames :],
-            lpips_model=self.validation_lpips_model,
-            fid_model=self.validation_fid_model,
-            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
-        )
+    def on_validation_epoch_end(self, namespace="validation") -> None:
         self.log_dict(
-            {f"{namespace}/{k}": v for k, v in metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
+            self.metrics.log('generation'),
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
         )
 
-        org_metric_dict = get_validation_metrics_for_videos(
-            org_xs_pred[self.context_frames :],
-            xs[self.context_frames :],
-            lpips_model=self.validation_lpips_model,
-            fid_model=self.validation_fid_model,
-            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
-        )
-        self.log_dict(
-            {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()}, on_step=False, on_epoch=True, prog_bar=True
-        )
+    def test_step(self, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
+        return self.validation_step(*args, **kwargs, namespace="test")
 
-        self.validation_step_outputs.clear()
+    def on_test_epoch_start(self) -> None:
+        self.on_validation_epoch_start()
 
     def on_test_epoch_end(self) -> None:
-        return self.on_validation_epoch_end(namespace="test")
+        self.on_validation_epoch_end(namespace="test")
 
     def visualize_noise(self, batch):
         self.log_dict({"pixel_mean": torch.mean(batch[0]), "pixel_std": torch.std(batch[0])})
@@ -117,3 +105,6 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
             context_frames=0,
             logger=self.logger.experiment,
         )
+
+    def load_state_dict(self, state_dict, strict = True, assign = False):
+        return super().load_state_dict(state_dict, False, assign)

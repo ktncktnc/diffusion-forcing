@@ -17,5 +17,15 @@ model:
   num_gru_layers: 1
   self_condition: False
   
-metrics:
-  - fvd
+evaluation:
+  seed: 1000
+  frame_wise: false
+  max_frames: ${dataset.n_frames}
+  metrics:
+    - fvd
+    - is
+    - fid
+    - lpips
+    - mse
+    - psnr
+    - ssim

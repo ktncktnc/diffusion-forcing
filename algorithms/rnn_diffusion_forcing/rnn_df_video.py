@@ -6,18 +6,12 @@ from omegaconf import DictConfig
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 
 from .rnn_df_base import RNN_DiffusionForcingBase
-from algorithms.common.old_metrics import (
-    FrechetInceptionDistance,
-    LearnedPerceptualImagePatchSimilarity,
-    FrechetVideoDistance,
-)
 from algorithms.common.metrics.video import VideoMetric
-from utils.logging_utils import log_video, get_validation_metrics_for_videos
+from utils.logging_utils import log_video
 
 
 class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
     def __init__(self, cfg: DictConfig):
-        # self.metrics = cfg.metrics
         super().__init__(cfg)
         self.strict_loading = False
 

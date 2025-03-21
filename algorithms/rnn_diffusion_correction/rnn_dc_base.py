@@ -335,20 +335,20 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             all_xs_pred = torch.stack(all_xs_pred)
             all_xs_pred = rearrange(all_xs_pred, "t b d (fs c) ... -> (t fs) b d c ...", fs=self.frame_stack)
             all_xs_pred = self._unnormalize_x(all_xs_pred)
-            self.validation_step_outputs.append((xs_pred.detach().cpu(), all_xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
+            return {
+                "loss": loss,
+                "xs_pred": xs_pred,
+                "org_xs_pred": org_xs_pred,
+                "xs": xs,
+                "all_xs_pred": all_xs_pred,
+            }
         else:
-            self.validation_step_outputs.append((xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
-
-        return loss
-
-    def on_validation_epoch_end(self, namespace="validation"):
-        if not self.validation_step_outputs:
-            return
-
-        self.validation_step_outputs.clear()
-
-    def test_step(self, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
-        return self.validation_step(*args, **kwargs, namespace="test")
+            return {
+                "loss": loss,
+                "xs_pred": xs_pred,
+                "org_xs_pred": org_xs_pred,
+                "xs": xs,
+            }
 
     def _normalize_x(self, xs):
         shape = [1] * (xs.ndim - self.data_mean.ndim) + list(self.data_mean.shape)

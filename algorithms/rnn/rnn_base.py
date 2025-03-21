@@ -359,16 +359,15 @@ class RNNBase(BasePytorchAlgo):
                     prog_bar=True,
                 )
 
-        if save:
-            self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
-
-        if return_prediction:
-            if return_z:
-                return loss, (xs_pred, xs, zs)
-            else:
-                return loss, (xs_pred, xs)
+        output_dict = {
+            "loss": loss,
+            "xs_pred": xs_pred,
+            "xs": xs,
+        }
+        if return_z:
+            output_dict["zs"] = zs
         
-        return loss
+        return output_dict
 
     def on_validation_epoch_end(self, namespace="validation"):
         if not self.validation_step_outputs:
