@@ -35,7 +35,7 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
 
         output_dict = super().training_step(batch, batch_idx)
 
-        if batch_idx % 5000 == 0:
+        if batch_idx % 1000 == 0:
             log_video(
                 output_dict["xs_pred"],
                 output_dict["xs"],
@@ -58,15 +58,15 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
         self.metrics(xs_pred, xs)
 
         # log the video
-        # if self.logger:
-        #     log_video(
-        #         xs_pred,
-        #         xs,
-        #         step=None if namespace == "test" else self.global_step,
-        #         namespace=namespace + "_vis",
-        #         context_frames=self.context_frames,
-        #         logger=self.logger.experiment,
-        #     )
+        if self.logger:
+            log_video(
+                xs_pred,
+                xs,
+                step=None if namespace == "test" else self.global_step,
+                namespace=namespace + "_vis",
+                context_frames=self.context_frames,
+                logger=self.logger.experiment,
+            )
 
     def on_validation_epoch_end(self, namespace="validation") -> None:
         self.log_dict(
