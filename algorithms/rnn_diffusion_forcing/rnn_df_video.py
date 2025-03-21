@@ -36,7 +36,7 @@ class RNN_DiffusionForcingVideo(RNN_DiffusionForcingBase):
 
         output_dict = super().training_step(batch, batch_idx)
 
-        if batch_idx % 5000 == 0:
+        if batch_idx % 1000 == 0:
             log_video(
                 output_dict["xs_pred"],
                 output_dict["xs"],
