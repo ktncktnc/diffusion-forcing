@@ -17,6 +17,7 @@ diffusion:
   use_snr: True
   use_cum_snr: True
   network_size: 48 # 48 for dmlab, 64 for minecraft
+  attn_dim_head: 32
   num_gru_layers: 1
   sampling_timesteps: 100
   ddim_sampling_eta: 0.0
@@ -24,5 +25,15 @@ diffusion:
   cum_snr_decay: 0.8 # 0.8 for dmlab, 0.96 for minecraft
   clip_noise: 6 # helps numerical stablity when using fp16
   
-metrics:
-  - fvd
+evaluation:
+  seed: 1000
+  frame_wise: false
+  max_frames: ${dataset.n_frames}
+  metrics:
+    - fvd
+    - is
+    - fid
+    - lpips
+    - mse
+    - psnr
+    - ssim

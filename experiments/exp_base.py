@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 
 from utils.print_utils import cyan
 from utils.distributed_utils import is_rank_zero
-from algorithms.common.config_mapping import ConfigMapping
 torch.set_float32_matmul_precision("high")
 
 
@@ -294,6 +293,7 @@ class BaseLightningExperiment(BaseExperiment):
         # if self.debug:
         #     self.logger.watch(self.algo, log="all")
 
+        trainer.strategy.strict_loading = False
         trainer.validate(
             self.algo,
             dataloaders=self._build_validation_loader(),

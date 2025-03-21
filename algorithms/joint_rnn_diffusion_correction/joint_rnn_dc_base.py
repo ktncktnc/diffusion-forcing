@@ -119,8 +119,6 @@ class JointRNN_DiffusionCorrectionBase(BasePytorchAlgo):
         
         xs = self._normalize_x(xs)
 
-
-
         nonterminals = batch[-1].bool().permute(1, 0)
         masks = torch.cumprod(nonterminals, dim=0).contiguous()
         conditions = [None] * n_frames_stacked
@@ -129,8 +127,6 @@ class JointRNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
         # For training
         if get_zs:
-
-
             xs = xs[:, start:end]
             pred_xs = pred_xs[:, start:end]
             zs = zs[:, start:end]

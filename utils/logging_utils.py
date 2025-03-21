@@ -17,7 +17,7 @@ from torchmetrics.functional import (
     structural_similarity_index_measure,
     universal_image_quality_index,
 )
-from algorithms.common.metrics import (
+from algorithms.common.old_metrics import (
     FrechetVideoDistance,
     LearnedPerceptualImagePatchSimilarity,
     FrechetInceptionDistance,
@@ -171,6 +171,7 @@ def get_validation_metrics_for_videos(
     output_dict["psnr"] = peak_signal_noise_ratio(observation_hat, observation_gt, data_range=2.0)
     output_dict["ssim"] = structural_similarity_index_measure(observation_hat, observation_gt, data_range=2.0)
     output_dict["uiqi"] = universal_image_quality_index(observation_hat, observation_gt)
+    
     # operations for LPIPS and FID
     observation_hat = torch.clamp(observation_hat, -1.0, 1.0)
     observation_gt = torch.clamp(observation_gt, -1.0, 1.0)

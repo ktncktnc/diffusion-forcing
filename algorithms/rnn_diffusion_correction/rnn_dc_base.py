@@ -45,9 +45,9 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
         super().__init__(cfg)
         self.original_algo = original_algo
-        self.original_algo.eval()
-        for param in self.original_algo.parameters():
-            param.requires_grad = False
+        # self.original_algo.eval()
+        # for param in self.original_algo.parameters():
+        #     param.requires_grad = False
 
     def _build_model(self):
         self.transition_model = DiffusionCorrectionransitionModel(
@@ -210,7 +210,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         return output_dict
 
     @torch.no_grad()
-    def validation_step(self, batch, batch_idx, namespace="validation"):
+    def validation_step(self, batch, batch_idx, namespace="validation", return_all_timesteps=False):
         if self.calc_crps_sum:
             # repeat batch for crps sum for time series prediction
             batch = [d[None].expand(self.calc_crps_sum, *([-1] * len(d.shape))).flatten(0, 1) for d in batch]
@@ -223,7 +223,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
         n_frames, batch_size, *_ = xs.shape
         xs_pred = [xs[0]] # (t, b, (fs c), h, w)
-        xs_pred_all = [] # (t, b, (fs c), h, w)
+        all_xs_pred = [] # (t, b, (fs c), h, w)
         org_xs_pred = [xs[0]] # (t, b, (fs c), h, w)
 
         # TODO: check: do we need to do context first
@@ -256,8 +256,14 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
                 chunk_org_xs_pred.shape, # (b, t, (fs c), h, w)
                 z_cond=rearrange(chunk_zs, 't b ... -> b t ...'), # (b, t, c_z, z_dim, z_dim)
                 external_cond=conditions[t:t + generation_chunk_size],
-                return_all_timesteps=False
-            ) 
+                return_all_timesteps=return_all_timesteps
+            )
+             # (b, t, (fs c), h, w)
+            if return_all_timesteps:
+                all_xs = pred_target
+                pred_target = pred_target[-1]
+                all_xs = torch.stack(all_xs, dim=2) # (b, t, timesteps, (fs c), h, w)
+                all_xs_pred.extend(all_xs.unbind(dim=1)) # (t, b, timesteps, (fs c), h, w)
             
             if self.cfg.target_type == "diff":
                 chunk_xs_pred = pred_target + chunk_org_xs_pred # (b, t, (fs c), h, w)
@@ -268,7 +274,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             
             # timestep first
             xs_pred.extend(chunk_xs_pred.unbind(dim=1))
-            xs_pred_all += xs_pred
+            # all_xs_pred += xs_pred
 
             t += generation_chunk_size
 
@@ -292,40 +298,46 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         xs_pred = self._unnormalize_x(xs_pred)
         org_xs_pred = self._unnormalize_x(org_xs_pred)
 
-        # if not self.is_spatial:
-        #     if self.transition_model.return_all_timesteps:
-        #         xs_pred_all = [torch.stack(item) for item in xs_pred_all]
+        if not self.is_spatial:
+            if self.transition_model.return_all_timesteps:
+                xs_pred_all = [torch.stack(item) for item in xs_pred_all]
 
-        #         limit = self.transition_model.sampling_timesteps
-        #         for i in np.linspace(1, limit, 5, dtype=int):
-        #             xs_pred = xs_pred_all[i]
-        #             xs_pred = self._unnormalize_x(xs_pred)
-        #             metric_dict = get_validation_metrics_for_states(xs_pred, xs)
+                limit = self.transition_model.sampling_timesteps
+                for i in np.linspace(1, limit, 5, dtype=int):
+                    xs_pred = xs_pred_all[i]
+                    xs_pred = self._unnormalize_x(xs_pred)
+                    metric_dict = get_validation_metrics_for_states(xs_pred, xs)
 
-        #             self.log_dict(
-        #                 {f"{namespace}/{i}_sampling_steps_{k}": v for k, v in metric_dict.items()},
-        #                 on_step=False,
-        #                 on_epoch=True,
-        #                 prog_bar=True,
-        #             )
-        #     else:
-        #         metric_dict = get_validation_metrics_for_states(xs_pred, xs)
-        #         self.log_dict(
-        #             {f"{namespace}/{k}": v for k, v in metric_dict.items()},
-        #             on_step=False,
-        #             on_epoch=True,
-        #             prog_bar=True,
-        #         )
+                    self.log_dict(
+                        {f"{namespace}/{i}_sampling_steps_{k}": v for k, v in metric_dict.items()},
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=True,
+                    )
+            else:
+                metric_dict = get_validation_metrics_for_states(xs_pred, xs)
+                self.log_dict(
+                    {f"{namespace}/{k}": v for k, v in metric_dict.items()},
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=True,
+                )
 
-        #         org_metric_dict = get_validation_metrics_for_states(org_xs_pred, xs)
-        #         self.log_dict(
-        #             {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()},
-        #             on_step=False,
-        #             on_epoch=True,
-        #             prog_bar=True,
-        #         )
+                org_metric_dict = get_validation_metrics_for_states(org_xs_pred, xs)
+                self.log_dict(
+                    {f"{namespace}/org_{k}": v for k, v in org_metric_dict.items()},
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=True,
+                )
 
-        self.validation_step_outputs.append((xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
+        if return_all_timesteps:
+            all_xs_pred = torch.stack(all_xs_pred)
+            all_xs_pred = rearrange(all_xs_pred, "t b d (fs c) ... -> (t fs) b d c ...", fs=self.frame_stack)
+            all_xs_pred = self._unnormalize_x(all_xs_pred)
+            self.validation_step_outputs.append((xs_pred.detach().cpu(), all_xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
+        else:
+            self.validation_step_outputs.append((xs_pred.detach().cpu(), org_xs_pred.detach().cpu(), xs.detach().cpu()))
 
         return loss
 

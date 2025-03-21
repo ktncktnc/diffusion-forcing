@@ -20,7 +20,7 @@ validation:
   val_every_n_step: 5000
   val_every_n_epoch: null
   batch_size: 16
-  limit_batch: 1
+  limit_batch: 20
 
 test:
   limit_batch: 1

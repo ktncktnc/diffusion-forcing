@@ -33,7 +33,13 @@ diffusion:
     use_linear_attn: True
     time_emb_type: rotary
 
-metrics:
-  - fvd
-  # - fid
-  # - lpips
+evaluation:
+  seed: 1000 
+  metrics:
+    - fvd
+    - is
+    - fid
+    - lpips
+    - mse
+    - psnr
+    - ssim

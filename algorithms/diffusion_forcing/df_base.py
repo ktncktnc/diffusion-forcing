@@ -159,9 +159,12 @@ class DiffusionForcingBase(BasePytorchAlgo):
 
         xs = self._unstack_and_unnormalize(xs)
         xs_pred = self._unstack_and_unnormalize(xs_pred)
-        self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
 
-        return loss
+        return {
+            'xs_pred': xs_pred,
+            'xs': xs,
+            'loss': loss,
+        }
 
     def test_step(self, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         return self.validation_step(*args, **kwargs, namespace="test")

@@ -4,7 +4,7 @@ import torch
 from omegaconf import DictConfig
 
 from .rnn_base import RNNBase
-from algorithms.common.metrics import (
+from algorithms.common.old_metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,
     FrechetVideoDistance,

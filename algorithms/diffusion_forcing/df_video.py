@@ -1,11 +1,13 @@
 from omegaconf import DictConfig
 import torch
+from typing import Optional, Any, Dict, Literal, Callable, Tuple
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from algorithms.common.metrics import (
+from algorithms.common.old_metrics import (
     FrechetInceptionDistance,
     LearnedPerceptualImagePatchSimilarity,
     FrechetVideoDistance,
 )
+from algorithms.common.metrics.video import VideoMetric
 from .df_base import DiffusionForcingBase
 from utils.logging_utils import log_video, get_validation_metrics_for_videos
 
@@ -16,15 +18,12 @@ class DiffusionForcingVideo(DiffusionForcingBase):
     """
 
     def __init__(self, cfg: DictConfig):
-        self.metrics = cfg.metrics
         self.n_tokens = cfg.n_frames // cfg.frame_stack  # number of max tokens for the model
         super().__init__(cfg)
 
     def _build_model(self):
         super()._build_model()
-        self.validation_fid_model = FrechetInceptionDistance(feature=64) if "fid" in self.metrics else None
-        self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity() if "lpips" in self.metrics else None
-        self.validation_fvd_model = [FrechetVideoDistance()] if "fvd" in self.metrics else None
+        self.metrics = VideoMetric(metric_types=self.cfg.evaluation.metrics)
 
     def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
         output_dict = super().training_step(batch, batch_idx)
@@ -38,18 +37,20 @@ class DiffusionForcingVideo(DiffusionForcingBase):
                 logger=self.logger.experiment,
             )
         return output_dict
+    
+    def on_validation_epoch_start(self) -> None:
+        if self.cfg.evaluation.seed is not None:
+            self.generator = torch.Generator(device=self.device).manual_seed(self.cfg.evaluation.seed)
+    
+    def validation_step(self, batch, batch_idx, namespace="validation"):
+        outputs = super().validation_step(batch, batch_idx, namespace)
+        xs_pred = outputs["xs_pred"]
+        xs = outputs["xs"]
 
-    def on_validation_epoch_end(self, namespace="validation") -> None:
-        if not self.validation_step_outputs:
-            return
-        xs_pred = []
-        xs = []
-        for pred, gt in self.validation_step_outputs:
-            xs_pred.append(pred)
-            xs.append(gt)
-        xs_pred = torch.cat(xs_pred, 1)
-        xs = torch.cat(xs, 1)
+        # Calculate metrics
+        self.metrics(xs_pred, xs)
 
+        # log the video
         if self.logger:
             log_video(
                 xs_pred,
@@ -60,18 +61,20 @@ class DiffusionForcingVideo(DiffusionForcingBase):
                 logger=self.logger.experiment,
             )
 
-        metric_dict = get_validation_metrics_for_videos(
-            xs_pred[self.context_frames :],
-            xs[self.context_frames :],
-            lpips_model=self.validation_lpips_model,
-            fid_model=self.validation_fid_model,
-            fvd_model=(self.validation_fvd_model[0] if self.validation_fvd_model else None),
-        )
+    def on_validation_epoch_end(self, namespace="validation") -> None:
         self.log_dict(
-            {f"{namespace}/{k}": v for k, v in metric_dict.items()},
+            self.metrics.log('generation'),
             on_step=False,
             on_epoch=True,
             prog_bar=True,
+            sync_dist=True,
         )
 
-        self.validation_step_outputs.clear()
+    def test_step(self, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
+        return self.validation_step(*args, **kwargs, namespace="test")
+
+    def on_test_epoch_start(self) -> None:
+        self.on_validation_epoch_start()
+
+    def on_test_epoch_end(self) -> None:
+        self.on_validation_epoch_end(namespace="test")

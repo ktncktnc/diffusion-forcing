@@ -254,9 +254,13 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
                     prog_bar=True,
                 )
 
-        self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
+        #self.validation_step_outputs.append((xs_pred.detach().cpu(), xs.detach().cpu()))
 
-        return loss
+        return {
+            "loss": loss,
+            "xs_pred": xs_pred,
+            "xs": xs,
+        }
 
     def on_validation_epoch_end(self, namespace="validation"):
         if not self.validation_step_outputs:

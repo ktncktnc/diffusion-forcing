@@ -9,7 +9,7 @@ from typing import List
 import json
 
 from utils.logging_utils import log_timeseries_plots
-from algorithms.common.metrics import crps_quantile_sum
+from algorithms.common.old_metrics import crps_quantile_sum
 from .rnn_df_base import RNN_DiffusionForcingBase
 
 
