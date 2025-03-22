@@ -1,5 +1,5 @@
 defaults:
-  - rnn_df_base
+  - rnn_teacher_forcing_base
 
 z_shape: [4, "${dataset.resolution}", "${dataset.resolution}"] # 16 for dmlab, 32 for minecraft
 frame_stack: 1 # 4 for dmlab, 8 for minecraft

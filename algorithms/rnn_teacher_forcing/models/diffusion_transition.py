@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .unet import TransitionUnet, TransitionMlp
-from .resnet import ResBlock2d
+from .resnet import ResBlock2d, ConditionalResNet2d, DenoisingNetworkWrapper
 from .utils import extract, default, linear_beta_schedule, cosine_beta_schedule, sigmoid_beta_schedule
 
 
@@ -52,7 +52,7 @@ class DiffusionTransitionModel(nn.Module):
         x_channel = self.x_shape[0]
         z_channel = self.z_shape[0]
         if len(self.x_shape) == 3:
-            self.model = TransitionUnet(
+            self.rnn_model = TransitionUnet(
                 z_channel=z_channel,
                 x_channel=x_channel,
                 external_cond_dim=self.external_cond_dim,
@@ -61,13 +61,15 @@ class DiffusionTransitionModel(nn.Module):
                 self_condition=self.self_condition,
             )
 
-            self.x_from_z = nn.Sequential(
-                ResBlock2d(z_channel, x_channel),
-                nn.Conv2d(x_channel, x_channel, 1, padding=0),
+            self.denoising_network = DenoisingNetworkWrapper(
+                x_channel=x_channel,
+                hidden_channel=32,
+                z_channel=z_channel,
+                num_blocks=3,
             )
 
         elif len(self.x_shape) == 1:
-            self.model = TransitionMlp(
+            self.rnn_model = TransitionMlp(
                 z_dim=z_channel,
                 x_dim=x_channel,
                 external_cond_dim=self.external_cond_dim,
@@ -77,7 +79,7 @@ class DiffusionTransitionModel(nn.Module):
                 self_condition=self.self_condition,
             )
 
-            self.x_from_z = nn.Linear(z_channel, x_channel)
+            self.denoising_network = nn.Linear(z_channel, x_channel)
 
         else:
             raise ValueError(f"x_shape must have 1 or 3 dims but got shape {self.x_shape}")
@@ -154,34 +156,36 @@ class DiffusionTransitionModel(nn.Module):
         register_buffer("clipped_snr", clipped_snr)
         register_buffer("snr", snr)
 
-    def rollout(
-        self,
-        z: torch.Tensor,
-        external_cond: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        :param z: z at current time step
-        :param external_cond: external_cond to be conditioned on
-        :return: z_next_pred, x_next_pred:
-        """
-        batch_size = z.shape[0]
+    # def rollout(
+    #     self,
+    #     z: torch.Tensor,
+    #     external_cond: Optional[torch.Tensor] = None,
+    # ) -> Tuple[torch.Tensor, torch.Tensor]:
+    #     """
+    #     :param z: z at current time step
+    #     :param external_cond: external_cond to be conditioned on
+    #     :return: z_next_pred, x_next_pred:
+    #     """
+    #     batch_size = z.shape[0]
 
-        # run a full diffusion to predict next latent z and obs x
-        sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
-        x_next_pred, z_next_pred = sample_fn(
-            (batch_size,) + tuple(self.x_shape),
-            z,
-            external_cond=external_cond,
-            return_all_timesteps=self.return_all_timesteps,
-        )
-        return z_next_pred, x_next_pred
+    #     # run a full diffusion to predict next latent z and obs x
+    #     sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
+    #     x_next_pred, z_next_pred = sample_fn(
+    #         (batch_size,) + tuple(self.x_shape),
+    #         z,
+    #         external_cond=external_cond,
+    #         return_all_timesteps=self.return_all_timesteps,
+    #     )
+    #     return z_next_pred, x_next_pred
 
     def forward(
         self,
+        x: torch.Tensor,
         z: torch.Tensor,
+        t: int,
         x_next: torch.Tensor,
+        deterministic_noise_level: Optional[Union[float, int]] = None,
         external_cond: Optional[torch.Tensor] = None,
-        deterministic_t: Optional[Union[float, int]] = None,
         cum_snr: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -191,17 +195,23 @@ class DiffusionTransitionModel(nn.Module):
         :param deterministic_t: set a noise level t directly instead of sampling.
         :param cum_snr: cumulative snr for previous time steps
 
+        target_next = g(z_next, x_next^noise, t)
+        z_next = f(x, z)
+
         :return: z_next_pred, x_next_pred, loss(unreduced), cum_snr
         """
         batch_size = z.shape[0]
-        if deterministic_t is None:
-            t = torch.randint(0, self.num_timesteps, (batch_size,), device=z.device).long()
-        elif isinstance(deterministic_t, float):
-            deterministic_t = round(deterministic_t * (self.num_timesteps - 1))
-            t = torch.full((batch_size,), deterministic_t, device=z.device).long()
-        elif isinstance(deterministic_t, int):
-            deterministic_t = deterministic_t if deterministic_t >= 0 else self.timesteps + deterministic_t
-            t = torch.full((batch_size,), deterministic_t, device=z.device).long()
+        t = torch.full((batch_size,), t, device=z.device).long()
+
+        batch_size = z.shape[0]
+        if deterministic_noise_level is None:
+            noise_level = torch.randint(0, self.num_timesteps, (batch_size,), device=z.device).long()
+        elif isinstance(deterministic_noise_level, float):
+            deterministic_noise_level = round(deterministic_noise_level * (self.num_timesteps - 1))
+            noise_level = torch.full((batch_size,), deterministic_noise_level, device=z.device).long()
+        elif isinstance(deterministic_noise_level, int):
+            deterministic_noise_level = deterministic_noise_level if deterministic_noise_level >= 0 else self.timesteps + deterministic_noise_level
+            noise_level = torch.full((batch_size,), deterministic_noise_level, device=z.device).long()
 
         # get noised version of x_next
         noise = torch.randn_like(x_next)
@@ -211,13 +221,26 @@ class DiffusionTransitionModel(nn.Module):
         x_self_cond = None
         if self.self_condition and random() < 0.5:
             with torch.no_grad():
-                x_self_cond = self.model_predictions(noised_x_next, t, z, external_cond=external_cond).pred_x_start
+                x_self_cond = self.model_predictions(
+                    x=x,
+                    t=t,
+                    z_cond=z,
+                    x_next_noised=noised_x_next, 
+                    noise_level=noise_level,
+                    external_cond=external_cond
+                ).pred_x_start
                 x_self_cond.detach_()
 
-        model_pred = self.model_predictions(noised_x_next, t, z, external_cond=external_cond, x_self_cond=x_self_cond)
-        x_next_pred = model_pred.pred_x_start
+        model_pred = self.model_predictions(
+            x=x,
+            t=t,
+            z_cond=z,
+            x_next_noised=noised_x_next, 
+            noise_level=noise_level,
+            external_cond=external_cond,
+        )
         z_next_pred = model_pred.pred_z
-
+        x_next_pred = model_pred.pred_x_start
         pred = model_pred.model_out
 
         if self.objective == "pred_noise":
@@ -231,8 +254,8 @@ class DiffusionTransitionModel(nn.Module):
 
         loss = F.mse_loss(pred, target.detach(), reduction="none")
 
-        normalized_clipped_snr = self.clipped_snr[t] / self.snr_clip
-        normalized_snr = self.snr[t] / self.snr_clip
+        normalized_clipped_snr = self.clipped_snr[noise_level] / self.snr_clip
+        normalized_snr = self.snr[noise_level] / self.snr_clip
 
         if cum_snr is None or not self.use_cum_snr:
             cum_snr_next = normalized_clipped_snr
@@ -293,67 +316,72 @@ class DiffusionTransitionModel(nn.Module):
         posterior_variance = extract(self.posterior_variance, t, x_t.shape)
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
-
-    def model_predictions(self, x, t, z_cond, external_cond=None, x_self_cond=None):
-        z_next = self.model(x, t, z_cond, external_cond, x_self_cond)
-        model_output = self.x_from_z(z_next)
-
+    
+    def predict_z_next(self, x, t, z_cond, external_cond=None):
+        z_next = self.rnn_model(x, t, z_cond, external_cond)
+        return z_next
+    
+    def predict_diffusion_target(self, x_noised, noise_level, z_cond):
+        pred = self.denoising_network(x_noised, noise_level, z_cond)
         if self.objective == "pred_noise":
-            pred_noise = torch.clamp(model_output, -self.clip_noise, self.clip_noise)
-            x_start = self.predict_start_from_noise(x, t, pred_noise)
+            pred_noise = torch.clamp(pred, -self.clip_noise, self.clip_noise)
+            x_start = self.predict_start_from_noise(x_noised, noise_level, pred_noise)
 
         elif self.objective == "pred_x0":
-            x_start = model_output
-            pred_noise = self.predict_noise_from_start(x, t, x_start)
+            x_start = pred
+            pred_noise = self.predict_noise_from_start(x_noised, noise_level, x_start)
 
         elif self.objective == "pred_v":
-            v = model_output
-            x_start = self.predict_start_from_v(x, t, v)
-            pred_noise = self.predict_noise_from_start(x, t, x_start)
+            v = pred
+            x_start = self.predict_start_from_v(x_noised, noise_level, v)
+            pred_noise = self.predict_noise_from_start(x_noised, noise_level, x_start)
 
-        return ModelPrediction(pred_noise, x_start, z_next, model_output)
+        return ModelPrediction(pred_noise, x_start, z_cond, pred)
 
-    def p_mean_variance(self, x, t, z_cond, external_cond=None, x_self_cond=None):
-        model_pred = self.model_predictions(x, t, z_cond, external_cond=external_cond, x_self_cond=x_self_cond)
+    def model_predictions(self, x, t, z_cond, x_next_noised, noise_level, external_cond=None):
+        z_next = self.predict_z_next(x, t, z_cond, external_cond)
+        diffusion_pred = self.predict_diffusion_target(x_next_noised, noise_level, z_next)
+        return diffusion_pred
+
+    def p_mean_variance(self, x_noised, noise_level, z_cond):
+        model_pred = self.predict_diffusion_target(x_noised, noise_level, z_cond)
         x_start = model_pred.pred_x_start
-        pred_z = model_pred.pred_z
 
-        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_start, x_t=x, t=t)
-        return model_mean, posterior_variance, posterior_log_variance, x_start, pred_z
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_start, x_t=x_noised, t=noise_level)
+        return model_mean, posterior_variance, posterior_log_variance, x_start
 
     # @torch.no_grad()
-    def p_sample(self, x, t, z_cond, external_cond=None, x_self_cond=None):
+    def p_sample(self, x, noise_level, z_cond):
         b, *_, device = *x.shape, x.device
-        batched_times = torch.full((b,), t, device=x.device, dtype=torch.long)
-        model_mean, _, model_log_variance, x_start, pred_z = self.p_mean_variance(
-            x, batched_times, z_cond, external_cond=external_cond, x_self_cond=x_self_cond
+        batched_times = torch.full((b,), noise_level, device=x.device, dtype=torch.long)
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(
+            x, batched_times, z_cond
         )
-        noise = torch.randn_like(x) if t > 0 else 0.0  # no noise if t == 0
+        noise = torch.randn_like(x) if noise_level > 0 else 0.0  # no noise if t == 0
         noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
         pred_x = model_mean + (0.5 * model_log_variance).exp() * noise
-        return pred_x, x_start, pred_z
+        return pred_x, x_start
 
     # @torch.no_grad()
-    def p_sample_loop(self, shape, z_cond, external_cond=None, return_all_timesteps=False):
+    def p_sample_loop(self, shape, t, z_cond, external_cond=None, return_all_timesteps=False):
         batch, device = shape[0], self.betas.device
 
         x = torch.randn(shape, device=device)
         x = torch.clamp(x, -self.clip_noise, self.clip_noise)
         xs = [x]
 
-        x_start = None
-
-        for t in reversed(range(0, self.num_timesteps)):
-            self_cond = x_start if self.self_condition else None
-            x, x_start, pred_z = self.p_sample(x, t, z_cond, external_cond, x_self_cond=self_cond)
+        for noise_level in reversed(range(0, self.num_timesteps)):
+            x = self.p_sample(x, noise_level, z_cond)
             xs.append(x)
+
+        pred_z = self.predict_z_next(x, t=t, z_cond=z_cond, external_cond=external_cond)
 
         ret = x if not return_all_timesteps else xs
 
         return ret, pred_z
 
     # @torch.no_grad()
-    def ddim_sample(self, shape, z_cond, external_cond=None, return_all_timesteps=False):
+    def ddim_sample(self, shape, t, z_cond, external_cond=None, return_all_timesteps=False):
         batch, device, total_timesteps, sampling_timesteps, eta = (
             shape[0],
             self.betas.device,
@@ -363,9 +391,9 @@ class DiffusionTransitionModel(nn.Module):
         )
 
         # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
-        times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)
-        times = list(reversed(times.int().tolist()))
-        time_pairs = list(zip(times[:-1], times[1:]))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+        noise_levels = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)
+        noise_levels = list(reversed(noise_levels.int().tolist()))
+        noise_level_pairs = list(zip(noise_levels[:-1], noise_levels[1:]))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
 
         x = torch.randn(shape, device=device)
         x = torch.clamp(x, -self.clip_noise, self.clip_noise)
@@ -373,21 +401,21 @@ class DiffusionTransitionModel(nn.Module):
 
         x_start = None
 
-        for time, time_next in time_pairs:
-            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
-            self_cond = x_start if self.self_condition else None
-            model_pred = self.model_predictions(
-                x, time_cond, z_cond, external_cond=external_cond, x_self_cond=self_cond
+        for noise_level, noise_level_next in noise_level_pairs:
+            noise_level_cond = torch.full((batch,), noise_level, device=device, dtype=torch.long)
+            # self_cond = x_start if self.self_condition else None
+            model_pred = self.predict_diffusion_target(
+                x, noise_level_cond, z_cond
             )
-            pred_noise, x_start, pred_z, _ = model_pred
+            pred_noise, x_start, _, _ = model_pred
 
-            if time_next < 0:
+            if noise_level_next < 0:
                 x = x_start
                 xs.append(x)
                 continue
 
-            alpha = self.alphas_cumprod[time]
-            alpha_next = self.alphas_cumprod[time_next]
+            alpha = self.alphas_cumprod[noise_level]
+            alpha_next = self.alphas_cumprod[noise_level_next]
 
             sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
             c = (1 - alpha_next - sigma**2).sqrt()
@@ -398,6 +426,8 @@ class DiffusionTransitionModel(nn.Module):
             x = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
             xs.append(x)
+
+        pred_z = self.predict_z_next(x, t=t, z_cond=z_cond, external_cond=external_cond)
 
         ret = x if not return_all_timesteps else xs
 
@@ -412,53 +442,53 @@ class DiffusionTransitionModel(nn.Module):
             + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def ddim_sample_step(
-        self, x, z_cond, external_cond=None, index=0, return_x_start=False, return_guidance_const=False
-    ):
-        if index == 0:
-            x = torch.clamp(x, -self.clip_noise, self.clip_noise)
+    # def ddim_sample_step(
+    #     self, x, z_cond, external_cond=None, index=0, return_x_start=False, return_guidance_const=False
+    # ):
+    #     if index == 0:
+    #         x = torch.clamp(x, -self.clip_noise, self.clip_noise)
 
-        batch, device, total_timesteps, sampling_timesteps, eta = (
-            x.shape[0],
-            self.betas.device,
-            self.num_timesteps,
-            self.sampling_timesteps,
-            self.ddim_sampling_eta,
-        )
+    #     batch, device, total_timesteps, sampling_timesteps, eta = (
+    #         x.shape[0],
+    #         self.betas.device,
+    #         self.num_timesteps,
+    #         self.sampling_timesteps,
+    #         self.ddim_sampling_eta,
+    #     )
 
-        # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
-        times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)
-        times = list(reversed(times.int().tolist()))
-        time_pairs = list(zip(times[:-1], times[1:]))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+    #     # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
+    #     times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)
+    #     times = list(reversed(times.int().tolist()))
+    #     time_pairs = list(zip(times[:-1], times[1:]))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
 
-        x = x.to(device)
+    #     x = x.to(device)
 
-        time, time_next = time_pairs[index]
-        time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
-        self_cond = None
-        model_pred = self.model_predictions(x, time_cond, z_cond, external_cond=external_cond, x_self_cond=self_cond)
-        pred_noise = model_pred.pred_noise
-        x_start = model_pred.pred_x_start
-        pred_z = model_pred.pred_z
+    #     time, time_next = time_pairs[index]
+    #     time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
+    #     self_cond = None
+    #     model_pred = self.model_predictions(x, time_cond, z_cond, external_cond=external_cond, x_self_cond=self_cond)
+    #     pred_noise = model_pred.pred_noise
+    #     x_start = model_pred.pred_x_start
+    #     pred_z = model_pred.pred_z
 
-        guidance_scale = 0
-        if time_next < 0:
-            x = x_start
-        else:
-            alpha = self.alphas_cumprod[time]
-            alpha_next = self.alphas_cumprod[time_next]
+    #     guidance_scale = 0
+    #     if time_next < 0:
+    #         x = x_start
+    #     else:
+    #         alpha = self.alphas_cumprod[time]
+    #         alpha_next = self.alphas_cumprod[time_next]
 
-            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
-            c = (1 - alpha_next - sigma**2).sqrt()
-            guidance_scale = (1 - alpha) - c * (1 - alpha).sqrt()
+    #         sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+    #         c = (1 - alpha_next - sigma**2).sqrt()
+    #         guidance_scale = (1 - alpha) - c * (1 - alpha).sqrt()
 
-            noise = torch.randn_like(x)
-            noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
+    #         noise = torch.randn_like(x)
+    #         noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
 
-            x = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
-        result = [x, pred_z]
-        if return_x_start:
-            result.append(x_start)
-        if return_guidance_const:
-            result.append(guidance_scale)
-        return result
+    #         x = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+    #     result = [x, pred_z]
+    #     if return_x_start:
+    #         result.append(x_start)
+    #     if return_guidance_const:
+    #         result.append(guidance_scale)
+    #     return result

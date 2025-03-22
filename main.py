@@ -28,6 +28,7 @@ def run_local(cfg: DictConfig):
     from experiments import build_experiment
     from utils.wandb_utils import OfflineWandbLogger, SpaceEfficientWandbLogger
 
+    print('CFG:', cfg)
     # Get yaml names
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
     cfg_choice = OmegaConf.to_container(hydra_cfg.runtime.choices)
