@@ -1,8 +1,8 @@
 from typing import Optional, Tuple, Union
 
-from random import random
+from random import random, randint
 from collections import namedtuple
-
+from einops import repeat
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,6 +46,9 @@ class DiffusionCorrectionransitionModel(nn.Module):
         self.self_condition = cfg.self_condition
         self.network_size = cfg.network_size
         self.return_all_timesteps = cfg.return_all_timesteps
+        self.noise_level_sampling = cfg.noise_level_sampling
+        self.max_noise_level_gap = cfg.max_noise_level_gap # Only used when noise_level_sampling is linear_increasing
+        assert self.noise_level_sampling in ["random", "linear_increasing", "constant"]
 
         if self.objective not in ["pred_noise", "pred_x0", "pred_v"]:
             raise ValueError("objective must be either pred_noise or pred_x0 or pred_v ")
@@ -173,7 +176,8 @@ class DiffusionCorrectionransitionModel(nn.Module):
         """
         B, T = z.shape[:2]
         if deterministic_t is None:
-            t = torch.randint(0, self.num_timesteps, (B,T), device=z.device).long()
+            # t = torch.randint(0, self.num_timesteps, (B,T), device=z.device).long()
+            t = self.sample_noise_level(B, T, z.device)
         elif isinstance(deterministic_t, float):
             deterministic_t = round(deterministic_t * (self.num_timesteps - 1))
             t = torch.full((B,), deterministic_t, device=z.device).long()
@@ -444,3 +448,17 @@ class DiffusionCorrectionransitionModel(nn.Module):
         if return_guidance_const:
             result.append(guidance_scale)
         return result
+
+    def sample_noise_level(self, b, t, device):
+        if self.noise_level_sampling == "random":
+            return torch.randint(0, self.num_timesteps, (b,t), device=device).long()
+        elif self.noise_level_sampling == "linear_increasing":
+            first_noise_level = randint(0, self.num_timesteps - 1)
+            noise_level_gap = randint(1, self.max_noise_level_gap)
+            noise_levels = torch.clamp(torch.arange(first_noise_level, first_noise_level + (t-1)*noise_level_gap, noise_level_gap, device=device), 0, self.num_timesteps-1)
+            return repeat(noise_levels, 't -> b t', b=b).long()
+        elif self.noise_level_sampling == "constant":
+            noise_level = randint(0, self.num_timesteps - 1)
+            return torch.full((b,t), noise_level, device=device).long()
+        else:
+            raise ValueError(f"unknown noise level sampling {self.noise_level_sampling}")

@@ -9,144 +9,6 @@ from rotary_embedding_torch.rotary_embedding_torch import rotate_half
 from timm.models.vision_transformer import PatchEmbed
 
 
-class Timesteps(nn.Module):
-    def __init__(
-        self,
-        num_channels: int,
-        flip_sin_to_cos: bool = True,
-        downscale_freq_shift: float = 0,
-    ):
-        super().__init__()
-        self.num_channels = num_channels
-        self.flip_sin_to_cos = flip_sin_to_cos
-        self.downscale_freq_shift = downscale_freq_shift
-
-    def forward(self, timesteps):
-        t_emb = get_timestep_embedding(
-            timesteps,
-            self.num_channels,
-            flip_sin_to_cos=self.flip_sin_to_cos,
-            downscale_freq_shift=self.downscale_freq_shift,
-        )
-        return t_emb
-
-
-class StochasticUnknownTimesteps(Timesteps):
-    def __init__(
-        self,
-        num_channels: int,
-        p: float = 1.0,
-    ):
-        super().__init__(num_channels)
-        self.unknown_token = (
-            nn.Parameter(torch.randn(1, num_channels)) if p > 0.0 else None
-        )
-        self.p = p
-
-    def forward(self, timesteps: torch.Tensor, mask: Optional[torch.Tensor] = None):
-        t_emb = super().forward(timesteps)
-        # if p == 0.0 - return original embeddings both during training and inference
-        if self.p == 0.0:
-            return t_emb
-
-        # training or mask is None - randomly replace embeddings with unknown token with probability p
-        # (mask can only be None for logging training visualization when using latents)
-        # or if p == 1.0 - always replace embeddings with unknown token even during inference)
-        if self.training or self.p == 1.0 or mask is None:
-            mask = torch.rand(t_emb.shape[:-1], device=t_emb.device) < self.p
-            mask = mask[..., None].expand_as(t_emb)
-            return torch.where(mask, self.unknown_token, t_emb)
-
-        # # inference with p < 1.0 - replace embeddings with unknown token only for masked timesteps
-        # if mask is None:
-        #     assert False, "mask should be provided when 0.0 < p < 1.0"
-        mask = mask[..., None].expand_as(t_emb)
-        return torch.where(mask, self.unknown_token, t_emb)
-
-
-class StochasticTimeEmbedding(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        time_embed_dim: int,
-        use_fourier: bool = False,
-        p: float = 0.0,
-    ):
-        super().__init__()
-        self.use_fourier = use_fourier
-        if self.use_fourier:
-            assert p == 0.0, "Fourier embeddings do not support stochastic timesteps"
-        self.timesteps = (
-            FourierEmbedding(dim, bandwidth=1)
-            if use_fourier
-            else StochasticUnknownTimesteps(dim, p)
-        )
-        self.embedding = TimestepEmbedding(dim, time_embed_dim)
-
-    def forward(self, timesteps: torch.Tensor, mask: Optional[torch.Tensor] = None):
-        emb = self.timesteps(timesteps.float()) if self.use_fourier else self.timesteps(timesteps.float(), mask)
-        return self.embedding(emb)
-
-
-class ZtoVDTConvAdapter(nn.Module):
-    def __init__(self, input_channels, hidden_size, use_fourier: bool = False, p: float = 0.0):
-        super().__init__()
-        
-        # Use convolutional layers to process spatial information
-        self.input_channels = input_channels
-        self.hidden_size = hidden_size
-        self.conv = nn.Sequential(
-            nn.Conv2d(input_channels, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, hidden_size, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))  # Global average pooling
-        )
-
-        max_timesteps = 1000
-        self.temporal_embed = nn.Embedding(max_timesteps, hidden_size)
-        # Initialize the embedding weights with sinusoidal encoding
-        with torch.no_grad():
-            position_ids = torch.arange(max_timesteps)
-            sinusoidal_embed = get_timestep_embedding(
-                position_ids, 
-                hidden_size
-            )
-            self.temporal_embed.weight.copy_(sinusoidal_embed)
-        
-        # Final projection to get to z_size
-        self.projection = nn.Linear(hidden_size, hidden_size)
-    
-    def forward(self, z_rnn):
-        B, T, C, H, W = z_rnn.shape
-        z_rnn = rearrange(z_rnn, 'b t c h w -> (b t) c h w')
-        z_conv = self.conv(z_rnn)  # Shape: (B*T, hidden_size, 1, 1)
-        z_vdt = z_conv.flatten(1)  # Shape: (B*T, hidden_size)
-        z_vdt = rearrange(z_vdt, '(b t) d -> b t d', b=B, t=T)
-        z_vdt = z_vdt + self.temporal_embed(torch.arange(T, device=z_vdt.device))
-        z_vdt = self.projection(z_vdt)  # Shape: (B*T, hidden_size)         
-        return z_vdt
-    
-
-
-class FourierEmbedding(torch.nn.Module):
-    """
-    Adapted from EDM2 - https://github.com/NVlabs/edm2/blob/38d5a70fe338edc8b3aac4da8a0cefbc4a057fb8/training/networks_edm2.py#L73
-    """
-
-    def __init__(self, num_channels, bandwidth=1):
-        super().__init__()
-        self.register_buffer("freqs", 2 * np.pi * torch.randn(num_channels) * bandwidth)
-        self.register_buffer("phases", 2 * np.pi * torch.rand(num_channels))
-
-    def forward(self, x):
-        y = x.to(torch.float32)
-        y = y[..., None] * self.freqs.to(torch.float32)
-        y = y + self.phases.to(torch.float32)
-        y = y.cos() * np.sqrt(2)
-        return y.to(x.dtype)
-
 
 def get_timestep_embedding(
     timesteps: torch.Tensor,
@@ -190,6 +52,96 @@ def get_timestep_embedding(
     if embedding_dim % 2 == 1:
         emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
     return emb
+
+
+class Timesteps(nn.Module):
+    def __init__(
+        self,
+        num_channels: int,
+        flip_sin_to_cos: bool = True,
+        downscale_freq_shift: float = 0,
+    ):
+        super().__init__()
+        self.num_channels = num_channels
+        self.flip_sin_to_cos = flip_sin_to_cos
+        self.downscale_freq_shift = downscale_freq_shift
+
+    def forward(self, timesteps):
+        t_emb = get_timestep_embedding(
+            timesteps.float(),
+            self.num_channels,
+            flip_sin_to_cos=self.flip_sin_to_cos,
+            downscale_freq_shift=self.downscale_freq_shift,
+        )
+        return t_emb
+
+
+# class DiffusionTimestepEmbedding(nn.Module):
+#     def __init__(
+#         self,
+#         dim: int,
+#         time_embed_dim: int
+#     ):
+#         super().__init__()
+#         self.timesteps = Timesteps(dim)
+#         self.embedding = TimestepEmbedding(dim, time_embed_dim)
+
+#     def forward(self, timesteps: torch.Tensor):
+#         emb = self.timesteps(timesteps.float())
+#         return self.embedding(emb)
+
+
+class ConditionEmbedding(nn.Module):
+    def __init__(self, input_channels, hidden_size):
+        super().__init__()
+        
+        # Use convolutional layers to process spatial information
+        self.input_channels = input_channels
+        self.hidden_size = hidden_size
+        self.conv = nn.Sequential(
+            nn.Conv2d(input_channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, hidden_size, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1))  # Global average pooling
+        )
+
+        self.time_embedding = Timesteps(hidden_size)
+        
+        # Final projection to get to z_size
+        self.projection = nn.Linear(hidden_size, hidden_size)
+    
+    def forward(self, z_rnn):
+        B, T, C, H, W = z_rnn.shape
+        z_rnn = rearrange(z_rnn, 'b t c h w -> (b t) c h w')
+        z_conv = self.conv(z_rnn)  # Shape: (B*T, hidden_size, 1, 1)
+        z_vdt = z_conv.flatten(1)  # Shape: (B*T, hidden_size)
+        z_vdt = rearrange(z_vdt, '(b t) d -> b t d', b=B, t=T)
+        z_vdt = z_vdt + self.time_embedding(torch.arange(T, device=z_vdt.device))
+        z_vdt = self.projection(z_vdt)  # Shape: (B, T, hidden_size)
+        return z_vdt
+    
+
+
+class FourierEmbedding(torch.nn.Module):
+    """
+    Adapted from EDM2 - https://github.com/NVlabs/edm2/blob/38d5a70fe338edc8b3aac4da8a0cefbc4a057fb8/training/networks_edm2.py#L73
+    """
+
+    def __init__(self, num_channels, bandwidth=1):
+        super().__init__()
+        self.register_buffer("freqs", 2 * np.pi * torch.randn(num_channels) * bandwidth)
+        self.register_buffer("phases", 2 * np.pi * torch.rand(num_channels))
+
+    def forward(self, x):
+        y = x.to(torch.float32)
+        y = y[..., None] * self.freqs.to(torch.float32)
+        y = y + self.phases.to(torch.float32)
+        y = y.cos() * np.sqrt(2)
+        return y.to(x.dtype)
+
+
 
 
 class RotaryEmbeddingND(nn.Module):

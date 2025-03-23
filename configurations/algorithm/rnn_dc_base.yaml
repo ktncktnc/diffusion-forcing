@@ -12,7 +12,7 @@ data_mean: ${dataset.data_mean}
 data_std: ${dataset.data_std}
 external_cond_dim: 0 #${dataset.action_dim}
 context_frames: ${dataset.context_length}
-random_start: true
+random_start: start
 target_type: data
 correction_size: 8
 weight_decay: 1e-4
@@ -24,6 +24,8 @@ chunk_size: 1 # -1 for full trajectory diffusion, number to specify diffusion ch
 calc_crps_sum: 100 # generate multiple samples for computing crps_sum
 learnable_init_z: False
 optimizer_beta: [0.9, 0.999]
+
+finetune_org_model: False
 
 diffusion:
   network_size: 32

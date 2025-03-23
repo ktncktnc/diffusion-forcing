@@ -164,7 +164,7 @@ class RNNBase(BasePytorchAlgo):
         z = init_z
         x = first_x
 
-        for i, t in enumerate(1, ts+1):
+        for i, t in enumerate(ts):
             x_next, z_next = self.roll_1_step(
                 x=x,
                 t=t,

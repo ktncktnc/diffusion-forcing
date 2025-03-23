@@ -12,7 +12,6 @@ from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 
 class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
     def __init__(self, original_algo: BasePytorchAlgo, cfg: DictConfig):
-        self.metrics = cfg.metrics
         super().__init__(original_algo, cfg)
 
     def _build_model(self):
@@ -26,9 +25,17 @@ class RNN_DiffusionCorrectionVideo(RNN_DiffusionCorrectionBase):
     def training_step(self, batch, batch_idx):
         output_dict = super().training_step(batch, batch_idx)
 
-        if batch_idx % 500 == 0 and self.logger is not None:
+        n_samples = 5
+        # norm zs to [0,1], min max keep dim 0
+        zs = output_dict["zs"]
+        min_vals = zs.reshape(zs.shape[1], -1).min(dim=1, keepdim=True)[0].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        max_vals = zs.reshape(zs.shape[1], -1).max(dim=1, keepdim=True)[0].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        zs = (zs - min_vals) / (max_vals - min_vals + 1e-8)
+        zs = zs[:, :, :3, :, :]
+
+        if self.logger is not None and ((batch_idx < 15000 and batch_idx % 1500 == 0) or (batch_idx >= 15000 and batch_idx % 5000 == 0)):
             log_multiple_videos(
-                [output_dict["xs_pred"], output_dict["org_xs_pred"], output_dict["xs"]],
+                [output_dict["xs_pred"][:, :n_samples], output_dict["org_xs_pred"][:, :n_samples], zs[:, :n_samples], output_dict["xs"][:, :n_samples]],
                 step=self.global_step,
                 namespace="training_vis_all",
                 logger=self.logger.experiment,

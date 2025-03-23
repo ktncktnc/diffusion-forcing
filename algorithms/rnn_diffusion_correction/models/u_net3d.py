@@ -5,7 +5,7 @@ from torch import nn
 from einops import rearrange
 from omegaconf import DictConfig
 from rotary_embedding_torch import RotaryEmbedding
-from .embeddings import StochasticTimeEmbedding, ZtoVDTConvAdapter
+from .embeddings import Timesteps, TimestepEmbedding, ConditionEmbedding
 from .u_net_blocks import *
 
 
@@ -22,21 +22,7 @@ class Unet3D(nn.Module):
         input_size: torch.Size, # h
         in_channels: int, # c
         z_channels: int, # condition c,
-        # init_hidden_channels: int = 32,
-        # dim_mults: list = [1, 2, 4, 8],
-        # num_res_blocks: int = 2,
-        # resnet_block_groups: int = 4,
-        # attn_resolutions: list = [8],
-        # attn_heads: int = 1,
-        # attn_head_dim: int = 32,
-        # use_linear_attn: bool = False,
-        # use_init_temporal_attn: bool = True,
-        # init_kernel_size: int = 1,
-        # dropout: float = 0.0,
-        # is_causal_selfattn: bool = True,
-        # is_causal_crossattn: bool = True,
-        # use_fourier_noise_embedding: bool = False,
-        # use_fourier_cond_embedding: bool = False,
+        out_channels: int = None
     ):
         super().__init__()
 
@@ -44,13 +30,12 @@ class Unet3D(nn.Module):
         self.cond_channel = z_channels
         self.is_causal_selfattn = cfg.is_causal_selfattn
         self.is_causal_crossattn = cfg.is_causal_crossattn
-        self.use_fourier_noise_embedding = cfg.use_fourier_noise_embedding
-        self.use_fourier_cond_embedding = cfg.use_fourier_cond_embedding
+
         self.use_init_temporal_attn = cfg.use_init_temporal_attn
         self.use_linear_attn = cfg.use_linear_attn
         self.attn_resolutions = cfg.attn_resolutions
 
-        self.dim_mults = cfg.dim_mults
+        self.channel_mult = cfg.channel_mult
         self.init_hidden_channels = cfg.init_hidden_channels
         self.init_kernel_size = cfg.init_kernel_size
 
@@ -61,14 +46,14 @@ class Unet3D(nn.Module):
         self.resnet_block_groups = cfg.resnet_block_groups
 
         resolution = input_size
-        out_channel = in_channels
+        self.out_channel = out_channels if out_channels is not None else in_channels
         self.attn_resolutions = [resolution // res for res in list(self.attn_resolutions)]
 
-        dims = [self.init_hidden_channels, *map(lambda m: self.init_hidden_channels * m, self.dim_mults)]
-        in_out = list(zip(dims[:-1], dims[1:]))
-        mid_dim = dims[-1]
+        channels = [self.init_hidden_channels, *map(lambda m: self.init_hidden_channels * m, self.channel_mult)]
+        in_out = list(zip(channels[:-1], channels[1:]))
+        mid_channel = channels[-1]
 
-        emb_dim = self.noise_level_emb_dim
+        # emb_dim = self.noise_level_emb_dim
 
         init_padding = self.init_kernel_size // 2       
         self.init_conv = nn.Conv3d(
@@ -78,17 +63,18 @@ class Unet3D(nn.Module):
             padding=(0, init_padding, init_padding),
         )
 
-        self.noise_level_pos_embedding = StochasticTimeEmbedding(
-            dim=self.noise_level_dim,
-            time_embed_dim=self.noise_level_emb_dim,
-            use_fourier=self.use_fourier_noise_embedding,
+        self.noise_level_position_embedding = Timesteps(self.noise_level_dim)
+        # self.noise_level_embedding = TimestepEmbedding(
+        #     in_channels=self.noise_level_dim,
+        #     time_embed_dim=self.condition_dim
+        # )
+        self.noise_level_embedding = nn.Sequential(
+            nn.Linear(self.noise_level_dim, self.condition_dim),
+            nn.SiLU(),
+            nn.Linear(self.condition_dim, self.condition_dim),
         )
 
-        self.cond_embedding = ZtoVDTConvAdapter(
-            self.cond_channel,
-            self.noise_level_emb_dim,
-            use_fourier=self.use_fourier_cond_embedding
-        )
+        self.cond_embedding = ConditionEmbedding(self.cond_channel, self.condition_dim)
 
         self.rotary_time_pos_embedding = RotaryEmbedding(dim=self.attn_head_dim)
 
@@ -108,8 +94,8 @@ class Unet3D(nn.Module):
         self.up_blocks = nn.ModuleList()
 
         block_klass = partial(ResnetBlock, groups=self.resnet_block_groups)
-        block_klass_noise = partial(
-            ResnetBlock, groups=self.resnet_block_groups, emb_dim=emb_dim
+        block_klass_resnet_noise = partial(
+            ResnetBlock, groups=self.resnet_block_groups, emb_dim=self.condition_dim
         )
         spatial_attn_klass = partial(
             UnetSpatialAttentionBlock, heads=self.num_heads, dim_head=self.attn_head_dim
@@ -123,7 +109,7 @@ class Unet3D(nn.Module):
             rotary_emb=self.rotary_time_pos_embedding,
         )
         
-        crossattn_klass = partial(
+        condition_crossattn_klass = partial(
             UnetTemporalCrossAttentionBlock,
             heads=self.num_heads,
             dim_head=self.attn_head_dim,
@@ -140,24 +126,25 @@ class Unet3D(nn.Module):
                 nn.ModuleList(
                     [
                         UnetSequentialCondition(
-                            block_klass_noise(dim_in, dim_out),
+                            # n Resnet blocks
+                            block_klass_resnet_noise(dim_in, dim_out),
                             *(
-                                block_klass_noise(dim_out, dim_out)
+                                block_klass_resnet_noise(dim_out, dim_out)
                                 for _ in range(self.num_res_blocks - 1)
                             ),
+                            # spatial attn
                             (
-                                spatial_attn_klass(
-                                    dim_out,
-                                    use_linear=self.use_linear_attn and not is_last,
-                                )
+                                spatial_attn_klass(dim_out, use_linear=self.use_linear_attn and not is_last)
                                 if use_attn
                                 else nn.Identity()
                             ),
+                            # temporal attn
                             temporal_attn_klass(dim_out) if use_attn else nn.Identity(),
-                            crossattn_klass(
+                            # cross attn for hidden states conditions
+                            condition_crossattn_klass(
                                 query_dim=dim_out,
-                                key_dim=self.noise_level_emb_dim,
-                                value_dim=self.noise_level_emb_dim
+                                key_dim=self.condition_dim,
+                                value_dim=self.condition_dim
                             ),
                         ),
                         Downsample(dim_out) if not is_last else nn.Identity(),
@@ -168,15 +155,15 @@ class Unet3D(nn.Module):
             curr_resolution *= 2 if not is_last else 1
 
         self.mid_block = UnetSequentialCondition(
-            block_klass_noise(mid_dim, mid_dim),
-            spatial_attn_klass(mid_dim),
-            temporal_attn_klass(mid_dim),
-            crossattn_klass(
+            block_klass_resnet_noise(mid_channel, mid_channel),
+            spatial_attn_klass(mid_channel),
+            temporal_attn_klass(mid_channel),
+            condition_crossattn_klass(
                 query_dim=dim_out,
-                key_dim=self.noise_level_emb_dim,
-                value_dim=self.noise_level_emb_dim
+                key_dim=self.condition_dim,
+                value_dim=self.condition_dim
             ),
-            block_klass_noise(mid_dim, mid_dim),
+            block_klass_resnet_noise(mid_channel, mid_channel),
         )
 
         for idx, (dim_in, dim_out) in enumerate(reversed(in_out)):
@@ -185,58 +172,57 @@ class Unet3D(nn.Module):
 
             self.up_blocks.append(
                 UnetSequentialCondition(
-                    block_klass_noise(dim_out * 2, dim_in),
+                    block_klass_resnet_noise(dim_out*2, dim_in),
                     *(
-                        block_klass_noise(dim_in, dim_in)
+                        block_klass_resnet_noise(dim_in, dim_in)
                         for _ in range(self.num_res_blocks - 1)
                     ),
                     (
-                        spatial_attn_klass(
-                            dim_in, use_linear=self.use_linear_attn and idx > 0
-                        )
-                        if use_attn
+                        spatial_attn_klass(dim_in, use_linear=self.use_linear_attn and idx > 0) 
+                        if use_attn 
                         else nn.Identity()
                     ),
                     temporal_attn_klass(dim_in) if use_attn else nn.Identity(),
-                    crossattn_klass(
+                    condition_crossattn_klass(
                         query_dim=dim_in,
-                        key_dim=self.noise_level_emb_dim,
-                        value_dim=self.noise_level_emb_dim
+                        key_dim=self.condition_dim,
+                        value_dim=self.condition_dim
                     ),
                     Upsample(dim_in) if not is_last else nn.Identity(),
                 )
             )
             curr_resolution //= 2 if not is_last else 1
 
-        self.out = nn.Sequential(block_klass(self.init_hidden_channels*2, self.init_hidden_channels), nn.Conv3d(self.init_hidden_channels, out_channel, 1))
+        self.out = nn.Sequential(
+            block_klass(self.init_hidden_channels*2, self.init_hidden_channels), 
+            nn.Conv3d(self.init_hidden_channels, self.out_channel, 1)
+        )
 
     @property
-    def noise_level_emb_dim(self):
+    def condition_dim(self):
         return self.init_hidden_channels * 4
     
     @property
     def noise_level_dim(self):
-        return max(self.noise_level_emb_dim // 4, 32)
+        return max(self.condition_dim // 4, 32)
 
     def forward(
         self,
         x: torch.Tensor,
         cond: Optional[torch.Tensor],
-        t: torch.Tensor,
-        external_cond_mask: Optional[torch.Tensor] = None,
+        t: torch.Tensor
     ):
         x = rearrange(x, "b t c h w -> b c t h w").contiguous()
 
         # TODO: patchify x
-
-        difffusion_time_emb = self.noise_level_pos_embedding(t) # (b, t, emb_dim)
+        t_embed = self.noise_level_position_embedding(t) # (b, t, emb_dim)
+        difffusion_time_emb = self.noise_level_embedding(t_embed) # (b, t, emb_dim)
         cond_emb = None
+
         if self.cond_embedding is not None:
             if cond is None:
                 raise ValueError("External condition is required, but not provided.")
-            cond_emb = self.cond_embedding(
-                cond
-            ) # (b, t, emb_dim)
+            cond_emb = self.cond_embedding(cond) # (b, t, emb_dim)
 
         x = self.init_conv(x) # (b, init_dim, t, h, w)
 
@@ -262,183 +248,179 @@ class Unet3D(nn.Module):
         return x
 
 
-# import torch
-# import matplotlib.pyplot as plt
-# from omegaconf import OmegaConf
-# from algorithms.rnn_diffusion_correction.models.u_net3d import Unet3D
-# from algorithms.rnn_diffusion_correction.models.u_net_blocks import UnetTemporalAttentionBlock, UnetTemporalCrossAttentionBlock
 
-# def disable_norm_layers(model):
-#     """Replace all normalization layers with identity"""
-#     for module in model.modules():
-#         if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d,
-#                               torch.nn.LayerNorm, torch.nn.GroupNorm, torch.nn.InstanceNorm1d,
-#                               torch.nn.InstanceNorm2d, torch.nn.InstanceNorm3d)):
-#             # Save the original state and replace with identity
-#             module._original_forward = module.forward
-#             module.forward = lambda x: x
-#     return model
+import torch
+from algorithms.rnn_diffusion_correction.models.u_net3d import Unet3D
+from omegaconf import OmegaConf
+import matplotlib.pyplot as plt
+import numpy as np
 
-# def test_component(module_name, module, input_shape, is_cross=False, cond_shape=None):
-#     """Test a single component for causal behavior"""
-#     print(f"\nTesting {module_name}...")
-    
-#     # Create inputs
-#     torch.manual_seed(42)
-#     x1 = torch.randn(*input_shape)
-#     x2 = x1.clone()
-    
-#     # Change future timesteps in x2
-#     time_dim = 2 if len(input_shape) > 3 else 1
-#     change_at = input_shape[time_dim] // 2
-    
-#     if len(input_shape) > 3:  # For 5D tensors (b,c,t,h,w)
-#         x2[:, :, change_at:] = torch.randn_like(x2[:, :, change_at:])
-#     else:  # For 3D tensors (b,t,c)
-#         x2[:, change_at:] = torch.randn_like(x2[:, change_at:])
-    
-#     # Make condition tensors if needed
-#     cond1 = cond2 = None
-#     if is_cross and cond_shape:
-#         cond1 = torch.randn(*cond_shape)
-#         cond2 = cond1.clone()
-#         cond2[:, change_at:] = torch.randn_like(cond2[:, change_at:])
-    
-#     # Process inputs
-#     with torch.no_grad():
-#         if is_cross:
-#             print('cond2', cond1.shape)
-#             print('x2', x1.shape)
-#             out1 = module(x1, cond1)
-#             out2 = module(x2, cond2)
-#         else:
-#             out1 = module(x1)
-#             out2 = module(x2)
-    
-#     # Calculate differences
-#     diffs = []
-#     for t in range(input_shape[time_dim]):
-#         if len(input_shape) > 3:
-#             diff = torch.abs(out1[:, :, t] - out2[:, :, t]).mean().item()
-#         else:
-#             diff = torch.abs(out1[:, t] - out2[:, t]).mean().item()
-#         diffs.append(diff)
-    
-#     # Check if causal
-#     past_max_diff = max(diffs[:change_at])
-#     print(f"Max difference in past timesteps: {past_max_diff:.6f}")
-#     is_causal = past_max_diff < 1e-5
-#     print(f"Is causal? {'Yes' if is_causal else 'No'}")
-    
-#     return is_causal, diffs
 
-# def test_all_components():
-#     """Test all components and the full model"""
-#     # Setup dimensions
-#     batch_size = 1
-#     time_steps = 3
-#     hidden_channels = 32
-#     channels = 1
-#     cond_channels = 1
-#     height = width = 2
-#     heads = 1
-#     dim_head = 32
-    
-#     # Test full model
-#     print("\nTesting full U-Net3D model...")
-   
-#     model = Unet3D(
-#         input_size=height,
-#         in_channels=channels,
-#         z_channels=cond_channels,
-#         init_hidden_channels=hidden_channels,
-#         dim_mults=[1, 2],
-#         num_res_blocks=1,
-#         resnet_block_groups=1,        
-#         attn_resolutions=[2],
-#         attn_heads=heads,
-#         attn_head_dim=dim_head,
-#         use_linear_attn=False,
-#         use_init_temporal_attn=True,
-#         init_kernel_size=1,
-#         dropout=0.0,
-#         is_causal_selfattn=True,
-#         is_causal_crossattn=True,
-#         use_fourier_noise_embedding=False,
-#         use_fourier_cond_embedding=False,
-#     )   
-    
-#     disable_norm_layers(model)
-    
-#     # Test the model
-#     x_shape = (batch_size, time_steps, channels, height, width)
-#     noise_shape = (batch_size, time_steps)
-#     cond_shape = (batch_size, time_steps, cond_channels, 32, 32)
-    
-#     torch.manual_seed(42)
-#     x1 = torch.randn(*x_shape)
-#     x2 = x1.clone()
-#     noise = torch.ones(*noise_shape)
-#     cond1 = torch.randn(*cond_shape)
-#     cond2 = cond1.clone()
-    
-#     # Change future timesteps
-#     change_at = 2
-#     print('change_at', change_at)
-#     #x2[:, change_at] = torch.randn_like(x2[:, change_at])
-#     cond2[:, change_at] = torch.randn_like(cond2[:, change_at])
-    
-#     # Process
-#     with torch.no_grad():
-#         out1 = model(x1, noise, cond1)
-#         out2 = model(x2, noise, cond2)
+def disable_normalization_layers(model):
+    """Disable all normalization layers in the model"""
+    for module in model.modules():
+        # Check for normalization layers and set them to identity
+        if hasattr(module, 'weight') and hasattr(module, 'running_mean'):
+            # For BatchNorm layers
+            if hasattr(module, 'track_running_stats'):
+                module.track_running_stats = False
+                module.running_mean = None
+                module.running_var = None
+            
+            # For other normalization layers, we could add more conditions if needed
 
-#     print(out1)
-#     print(out2)
-#     print(out1 - out2)
-#     print(out1.shape)
-    
-#     # Calculate differences
-#     diffs = []
-#     for t in range(time_steps):
-#         diff = torch.abs(out1[:, t] - out2[:, t]).mean().item()
-#         diffs.append(diff)
-#         print(f"Timestep {t}: Mean diff = {diff:.6f}")
-    
-#     past_max_diff = max(diffs[:change_at])
-#     print(f"Max difference in past timesteps: {past_max_diff:.6f}")
-#     is_causal = past_max_diff < 1e-5
-#     print(f"Is full model causal? {'Yes' if is_causal else 'No'}")
-    
-    
-#     # Plot results
-#     # plt.figure(figsize=(12, 8))
-#     # for i, (name, (_, diffs)) in enumerate(results.items()):
-#     #     plt.subplot(3, 2, i+1)
-#     #     plt.bar(range(len(diffs)), diffs)
-#     #     plt.axvline(x=change_at-0.5, color='r', linestyle='--')
-#     #     plt.title(name)
-#     #     plt.tight_layout()
-    
-#     plt.savefig('causal_tests.png')
-#     print("Results saved to causal_tests.png")
-    
-#     # Print summary
-#     # print("\nSummary:")
-#     # for name, (is_causal, _) in results.items():
-#     #     print(f"{name}: {'Causal' if is_causal else 'Not Causal'}")
-    
-#     # # Identify the problem
-#     # if not results["full_model"][0]:
-#     #     if not results["temporal_causal"][0]:
-#     #         print("Problem: Temporal self-attention causal mask is not working")
-#     #     if not results["cross_causal"][0]:
-#     #         print("Problem: Cross-attention causal mask is not working")
-#     #     if not results["temporal_causal"][0] and not results["cross_causal"][0]:
-#     #         print("Problem: Both attention mechanisms are not properly causal")
-#     #     print("Check the mask implementation in attention blocks")
-    
-#     # return results
+def disable_norm_layers(model):
+    """Replace all normalization layers with identity"""
+    for module in model.modules():
+        if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d,
+                              torch.nn.LayerNorm, torch.nn.GroupNorm, torch.nn.InstanceNorm1d,
+                              torch.nn.InstanceNorm2d, torch.nn.InstanceNorm3d)):
+            # Save the original state and replace with identity
+            module._original_forward = module.forward
+            module.forward = lambda x: x
+    return model
 
-# if __name__ == "__main__":
-#     test_all_components()
+def create_config():
+    """Create a simple configuration for testing"""
+    cfg = {
+        "is_causal_selfattn": True,
+        "is_causal_crossattn": True,
+        "use_init_temporal_attn": True,
+        "use_linear_attn": False,
+        "attn_resolutions": [8, 16, 32, 64],
+        "channel_mult": [1, 2, 4, 8],
+        "init_hidden_channels": 48,
+        "init_kernel_size": 3,
+        "num_heads": 4,
+        "attn_head_dim": 32,
+        "num_res_blocks": 2,
+        "resnet_block_groups": 8
+    }
+    return OmegaConf.create(cfg)
+
+def visualize_attention_patterns(model, x, cond, t):
+    """Run forward pass and extract attention patterns from key modules"""
+    # Store original forward methods
+    original_forwards = {}
+    attention_maps = {}
+    
+    # Monkey patch to capture attention patterns
+    def hook_attention(module, name):
+        original_forward = module.forward
+        
+        def patched_forward(*args, **kwargs):
+            result = original_forward(*args, **kwargs)
+            if hasattr(module, 'attn'):
+                # Get the last attention map
+                attention_maps[name] = module.attn.last_attn_map.detach().cpu()
+            return result
+        
+        original_forwards[name] = original_forward
+        module.forward = patched_forward
+    
+    # Apply hooks to relevant modules
+    for name, module in model.named_modules():
+        if 'UnetTemporalAttentionBlock' in module.__class__.__name__:
+            hook_attention(module, name)
+    
+    # Run forward pass
+    with torch.no_grad():
+        output = model(x, cond, t)
+    
+    # Restore original forward methods
+    for name, forward in original_forwards.items():
+        modules_path = name.split('.')
+        current_module = model
+        for path in modules_path[:-1]:
+            current_module = getattr(current_module, path)
+        setattr(current_module, modules_path[-1], forward)
+    
+    # Plot attention maps
+    fig, axes = plt.subplots(len(attention_maps), 1, figsize=(10, 4*len(attention_maps)))
+    if len(attention_maps) == 1:
+        axes = [axes]
+        
+    for i, (name, attn_map) in enumerate(attention_maps.items()):
+        # Get the first batch, first head
+        attn_map = attn_map[0, 0].numpy()
+        im = axes[i].imshow(attn_map, cmap='viridis')
+        axes[i].set_title(f"Attention Pattern: {name}")
+        axes[i].set_xlabel("Key position (time)")
+        axes[i].set_ylabel("Query position (time)")
+        fig.colorbar(im, ax=axes[i])
+    
+    plt.tight_layout()
+    plt.savefig("attention_patterns.png")
+    print(f"Saved attention visualization to attention_patterns.png")
+    
+    return attention_maps
+
+
+def main():
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    
+    # Create test inputs
+    batch_size = 2
+    time_steps = 8
+    channels = 3
+    height = 64
+    width = 64
+    
+    # Creating random input tensor
+    x = torch.randn(batch_size, time_steps, channels, height, width).to(device)
+    
+    # Create condition tensor
+    z_channels = 4
+    cond = torch.randn(batch_size, time_steps, z_channels, height, width).to(device)
+    
+    # Create diffusion timesteps
+    t = torch.randint(0, 1000, (batch_size, time_steps)).to(device)
+    
+    # Create model
+    cfg = create_config()
+    input_size = height
+    model = Unet3D(
+        cfg=cfg,
+        input_size=input_size,
+        in_channels=channels,
+        z_channels=z_channels
+    ).to(device)
+    print('model', model)
+    
+    # Disable normalization layers
+    disable_norm_layers(model)
+    
+    # Print model information
+    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+    
+    # Test causal attention
+    print("Testing forward pass with causal attention...")
+    with torch.no_grad():
+        output = model(x, cond, t)
+        # print('output', output)
+
+        x[:, 1, ...] = 100
+        output = model(x, cond, t)
+        # print('output', output)
+    
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {output.shape}")
+    print("Forward pass successful!")
+    
+    # Visualize attention patterns to verify causality
+    # print("Visualizing attention patterns...")
+    # attention_maps = visualize_attention_patterns(model, x, cond, t)
+    
+    # # Check if attention maps are causal (lower triangular)
+    # for name, attn_map in attention_maps.items():
+    #     attn_map = attn_map[0, 0].numpy()  # First batch, first head
+    #     is_causal = np.allclose(np.triu(attn_map, k=1), 0, atol=1e-5)
+    #     print(f"Attention map '{name}' is {'causal' if is_causal else 'NOT causal'}")
+
+if __name__ == "__main__":
+    main()

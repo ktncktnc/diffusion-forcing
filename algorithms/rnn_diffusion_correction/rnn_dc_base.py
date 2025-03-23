@@ -43,12 +43,18 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         self.min_crps_sum = float("inf")
         self.correction_size = cfg.correction_size
 
+        self.finetune_org_model = cfg.finetune_org_model
+
         super().__init__(cfg)
         self.original_algo = original_algo
-        # self.original_algo.eval()
-        # for param in self.original_algo.parameters():
-        #     param.requires_grad = False
 
+        if self.finetune_org_model:
+            self.original_algo.train()
+        else:
+            self.original_algo.eval()
+            for param in self.original_algo.parameters():
+                param.requires_grad = False
+            
     def _build_model(self):
         self.transition_model = DiffusionCorrectionransitionModel(
             self.x_stacked_shape, self.z_shape, self.external_cond_dim, self.cfg.diffusion, self.cfg.backbone
@@ -57,10 +63,16 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
     def configure_optimizers(self):
         transition_params = list(self.transition_model.parameters())
-        optimizer_dynamics = torch.optim.AdamW(
-            transition_params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay, betas=self.cfg.optimizer_beta
-        )
 
+        configs = [
+            {"params": transition_params, "lr": self.cfg.lr, "weight_decay": self.cfg.weight_decay, "betas": self.cfg.optimizer_beta},
+        ]
+        if self.finetune_org_model:
+            configs.append(
+                {"params": self.original_algo.parameters(), "lr": self.cfg.original_algo_lr, "weight_decay": self.cfg.weight_decay, "betas": self.cfg.optimizer_beta}
+            )
+
+        optimizer_dynamics = torch.optim.AdamW(configs)
         return optimizer_dynamics
 
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
@@ -84,20 +96,24 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             Processed tensors for model input in shape (b, t, (fs c), h, w)
         """
         if get_zs:
-            _, (pred_xs, xs, zs) = self.original_algo.validation_step(batch, 0, return_prediction=True, save=False, return_z=True)
-            n_frames, batch_size = xs.shape[:2]
+            outputs = self.original_algo.validation_step(batch, 0, is_log_video=False)
+            xs = outputs["xs"]
+            pred_xs = outputs["xs_pred"]
+            zs = outputs["zs"]
+
             xs = rearrange(xs, "(t fs) b c ... -> b t (fs c) ...", fs=self.frame_stack).contiguous()
             pred_xs = rearrange(pred_xs, "(t fs) b c ... -> b t (fs c) ...", fs=self.frame_stack).contiguous()
             zs = rearrange(zs, "t b ... -> b t ...").contiguous()
-
             pred_xs = self._normalize_x(pred_xs)
+            xs = self._normalize_x(xs)
+
+            n_frames, batch_size = xs.shape[:2]
         else:
             xs = batch[0]
             xs = rearrange(xs, "b (t fs) c ... -> b t (fs c) ...", fs=self.frame_stack).contiguous()
+            xs = self._normalize_x(xs)
             batch_size, n_frames = xs.shape[:2]
         
-        xs = self._normalize_x(xs)
-
         if n_frames % self.frame_stack != 0:
             raise ValueError("Number of frames must be divisible by frame stack size")
         if self.context_frames % self.frame_stack != 0:
@@ -120,9 +136,10 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             elif self.cfg.random_start == 'context':
                 start = n_context
             elif self.cfg.random_start == 'start':
-                start = 0
+                start = 1 # first frame is GT
             else:
                 raise ValueError("Invalid random_start value")
+            
             end = min(start + self.correction_size, n_frames_stacked)
 
             xs = xs[:, start:end]
@@ -171,6 +188,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
     def training_step(self, batch, batch_idx):
         # training step for dynamics
         xs, org_xs_pred, target, zs, conditions, masks  = self._preprocess_batch(batch, batch_first=True) # (b, t, (fs c), h, w)
+
         # batch first
         pred_target, loss = self.transition_model(
             zs, target, conditions, deterministic_t=None, cum_snr=None
@@ -205,6 +223,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             "xs_pred": self._unnormalize_x(xs_pred),
             "org_xs_pred": self._unnormalize_x(org_xs_pred),
             "xs": self._unnormalize_x(xs),
+            "zs": rearrange(zs, "b t ... -> t b ..."),
         }
 
         return output_dict
@@ -226,10 +245,19 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         all_xs_pred = [] # (t, b, (fs c), h, w)
         org_xs_pred = [xs[0]] # (t, b, (fs c), h, w)
 
-        # TODO: check: do we need to do context first
+        # TODO: check: do we need to do context first: because we need to correct these context frames as well
         n_context = self.context_frames // self.frame_stack
         n_context = 0
         z = init_z
+        # for t in range(1, n_context):
+        #     x_next_pred, z = self.original_algo.roll_1_step(
+        #         x=xs[t],
+        #         z=z,
+        #         condition=conditions[t],
+        #         t=t
+        #     )
+        #     org_xs_pred.append(x_next_pred)
+        # z = init_z
         t = n_context
         
         # prediction
@@ -252,6 +280,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             # batch first, reshape for diffusion model
             chunk_org_xs_pred = rearrange(chunk_org_xs_pred, "t b ... -> b t ...")
             # get residuals from diffusion
+            # TODO: generate t 
             pred_target = self.transition_model.ddim_sample(
                 chunk_org_xs_pred.shape, # (b, t, (fs c), h, w)
                 z_cond=rearrange(chunk_zs, 't b ... -> b t ...'), # (b, t, c_z, z_dim, z_dim)
