@@ -37,6 +37,7 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
         self.chunk_size = cfg.chunk_size
         self.calc_crps_sum = cfg.calc_crps_sum
         self.external_cond_dim = cfg.external_cond_dim
+        self.is_teacher_forcing = cfg.is_teacher_forcing
         self.uncertainty_scale = cfg.uncertainty_scale
         self.sampling_timesteps = cfg.diffusion.sampling_timesteps
         self.validation_step_outputs = []
@@ -182,7 +183,9 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
 
         # prediction
         while len(xs_pred) < n_frames:
-            if self.chunk_size > 0:
+            if self.is_teacher_forcing:
+                horizon = 1
+            elif self.chunk_size > 0:
                 horizon = min(n_frames - len(xs_pred), self.chunk_size)
             else:
                 horizon = n_frames - len(xs_pred)
@@ -197,7 +200,7 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
                 for t in range(horizon):
                     pyramid[m, t] = m - int(t * self.uncertainty_scale)
             pyramid = np.clip(pyramid, a_min=0, a_max=self.sampling_timesteps, dtype=int)
-
+            
             for m in range(pyramid_height):
                 if self.transition_model.return_all_timesteps:
                     xs_pred_all.append(chunk)
@@ -205,6 +208,9 @@ class RNN_DiffusionForcingBase(BasePytorchAlgo):
                 z_chunk = z.detach()
                 for t in range(horizon):
                     i = min(pyramid[m, t], self.sampling_timesteps - 1)
+
+                    if self.is_teacher_forcing:
+                        z_chunk = z.detach()
 
                     chunk[t], z_chunk = self.transition_model.ddim_sample_step(
                         chunk[t], z_chunk, conditions[len(xs_pred) + t], i

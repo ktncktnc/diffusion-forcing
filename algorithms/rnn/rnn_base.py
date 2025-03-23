@@ -164,12 +164,12 @@ class RNNBase(BasePytorchAlgo):
         z = init_z
         x = first_x
 
-        for i, t in enumerate(ts):
+        for i, t in enumerate(1, ts+1):
             x_next, z_next = self.roll_1_step(
                 x=x,
-                z=z,
-                condition=conditions[i],
                 t=t,
+                z=z,
+                condition=conditions[i]
             )
             z = z_next
             x = x_next
@@ -181,14 +181,13 @@ class RNNBase(BasePytorchAlgo):
 
         return xs_pred, zs
     
-    def roll_1_step(self, x, z, condition, t):
+    def roll_1_step(self, x, t, z, condition):
         x_next, z_next, _ = self.transition_model(
             x=x,
-            x_next=None,
-            z_cond=z,
-            external_cond=condition,
             t=t,
-            x_self_cond=False
+            z_cond=z,
+            x_next=None,
+            external_cond=condition
         )
         return x_next, z_next
 
@@ -208,11 +207,10 @@ class RNNBase(BasePytorchAlgo):
         for t in range(0, n_frames-1):
             x_next, z_next, _ = self.transition_model(
                 x=xs[t],
-                x_next=xs[t+1],
-                z_cond=z,
-                external_cond=conditions[t],
                 t=t,
-                x_self_cond=False
+                z_cond=z,
+                x_next=xs[t+1],
+                external_cond=conditions[t],
             )
             z = z_next
             xs_pred.append(x_next)
@@ -236,18 +234,17 @@ class RNNBase(BasePytorchAlgo):
         n_frames, batch_size, _, *_ = xs.shape
         # n_context = self.context_frames // self.frame_stack
 
-        xs_pred = []
+        xs_pred = [xs[0]]
         loss = []
         z = init_z
 
-        for t in range(0, n_frames-1):
+        for t in range(1, n_frames):
             x_next, z_next, l = self.transition_model(
-                x=xs[t],
-                x_next=xs[t+1],
+                x=xs[t-1],
+                x_next=xs[t],
                 z_cond=z,
                 external_cond=conditions[t],
-                t=t,
-                x_self_cond=False
+                t=t
             )
             z = z_next
             xs_pred.append(x_next)
@@ -256,11 +253,7 @@ class RNNBase(BasePytorchAlgo):
         xs_pred = torch.stack(xs_pred) # n_frames - 1 w.o. first frame
         loss = torch.stack(loss)
 
-        # remove mask for the first frame
-        masks = masks[self.frame_stack:] # mask is not stacked => remove first stacked frame by frame_stack
-        xs = xs[1:] # remove first frame to match
-
-        x_loss = self.reweigh_loss(loss, masks)
+        x_loss = self.reweigh_loss(loss, masks[self.frame_stack:])
         loss = x_loss
 
         if batch_idx % 20 == 0:
@@ -272,17 +265,19 @@ class RNNBase(BasePytorchAlgo):
             )
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        xs = self._unnormalize_x(xs)
+        xs_pred = self._unnormalize_x(xs_pred)
 
         output_dict = {
             "loss": loss,
-            "xs_pred": self._unnormalize_x(xs_pred),
-            "xs": self._unnormalize_x(xs),
+            "xs_pred": xs_pred,
+            "xs": xs,
         }
 
         return output_dict
 
     @torch.no_grad()
-    def validation_step(self, batch, batch_idx, return_prediction=False, save=True, return_z=False, namespace="validation"):
+    def validation_step(self, batch, batch_idx, namespace="validation"):
         """
         Generate n-1 next frames given the first frame.
         """
@@ -292,31 +287,29 @@ class RNNBase(BasePytorchAlgo):
         
         xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
         n_frames, batch_size, *_ = xs.shape
+        xs_pred = [xs[0]]
         xs_pred_all = []
         z = init_z
         zs = [z]
 
         # using first frame as input, generate n-1 next frames
         # => only generate n-1 frames
-        xs_pred = [xs[0]]
         # context
         n_context = self.context_frames // self.frame_stack
-        for t in range(0, n_context):
-            x_next_pred, z = self.roll_1_step(xs[t], z, conditions[t], t)
+        for t in range(1, n_context):
+            x_next_pred, z = self.roll_1_step(xs[t], t, z, conditions[t])
             xs_pred.append(x_next_pred)
             zs.append(z)
 
         t = n_context
-
         # prediction
         while len(xs_pred) < n_frames:
             x_next, z_next, _ = self.transition_model(
                 x=xs_pred[-1],
-                x_next=None,
-                z_cond=z,
-                external_cond=conditions[t],
                 t=t,
-                x_self_cond=False
+                z_cond=z,
+                x_next=None,
+                external_cond=conditions[t]
             )
             z = z_next
             xs_pred.append(x_next)
@@ -326,10 +319,9 @@ class RNNBase(BasePytorchAlgo):
         xs_pred = torch.stack(xs_pred)
         zs = torch.stack(zs)
         # using n_context frame as groundtruth => remove n_context frame
-        loss = F.mse_loss(xs_pred[n_context:], xs[n_context:], reduction="none")
-        # remove mask for the n_context frame, mask is not stacked
-        masks = masks[self.frame_stack*n_context:]
+        loss = F.mse_loss(xs_pred, xs, reduction="none")
         loss = self.reweigh_loss(loss, masks)
+
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
 
@@ -363,9 +355,8 @@ class RNNBase(BasePytorchAlgo):
             "loss": loss,
             "xs_pred": xs_pred,
             "xs": xs,
+            "zs": zs,
         }
-        if return_z:
-            output_dict["zs"] = zs
         
         return output_dict
 
@@ -390,14 +381,3 @@ class RNNBase(BasePytorchAlgo):
         std = self.data_std.reshape(shape).to(xs.device)
         return xs * std + mean
     
-    def mapping_config(self):
-        """
-        Return the mapping configuration for the model.
-        """
-        return {
-            'x_shape': self.x_shape,
-            'z_shape': self.z_shape,
-            'frame_stack': self.frame_stack,
-            'external_cond_dim': self.external_cond_dim,
-            'context_frames': self.context_frames,
-        } + self.transition_model.mapping_config()

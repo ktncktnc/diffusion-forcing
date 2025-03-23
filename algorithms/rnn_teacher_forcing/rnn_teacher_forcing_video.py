@@ -7,7 +7,7 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 
 from .rnn_teacher_forcing_base import RNN_TeacherForcingBase
 from algorithms.common.metrics.video import VideoMetric
-from utils.logging_utils import log_video
+from utils.logging_utils import log_video, log_multiple_videos
 
 
 class RNN_TeacherForcingVideo(RNN_TeacherForcingBase):
@@ -27,40 +27,72 @@ class RNN_TeacherForcingVideo(RNN_TeacherForcingBase):
         # if batch_idx == 0:
         #     self.visualize_noise(batch)
 
-        output_dict = super().training_step(batch, batch_idx)
-
+        outputs = super().training_step(batch, batch_idx)
+        n_samples = 4
         if self.logger and batch_idx % 1000 == 0:
-            log_video(
-                output_dict["xs_pred"],
-                output_dict["xs"],
+            xs_pred = outputs["xs_pred"][:, :n_samples]
+            xs = outputs["xs"][:, :n_samples]
+            zs = outputs["zs"][:, :n_samples]
+            noised_xs = outputs["noised_xs"][:, :n_samples]
+
+            # norm zs to [0,1], min max keep dim 0
+            min_vals = zs.view(zs.shape[0], -1).min(dim=1, keepdim=True)[0].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            max_vals = zs.view(zs.shape[0], -1).max(dim=1, keepdim=True)[0].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            zs = (zs - min_vals) / (max_vals - min_vals + 1e-8)
+            zs = zs[:, :, :3, :, :]
+
+            # Calculate metrics
+            self.metrics(xs_pred, xs)
+
+            # log the video
+            log_multiple_videos(
+                [xs_pred, noised_xs, zs, xs],
                 step=self.global_step,
                 namespace="training_vis",
+                context_frames=0,
                 logger=self.logger.experiment,
             )
-        return output_dict
+
+        return outputs
 
     def on_validation_epoch_start(self) -> None:
         if self.cfg.evaluation.seed is not None:
             self.generator = torch.Generator(device=self.device).manual_seed(self.cfg.evaluation.seed)
     
     def validation_step(self, batch, batch_idx, namespace="validation"):
-        outputs = super().validation_step(batch, batch_idx, namespace)
+        # outputs = super().validation_step(batch, batch_idx, namespace)
+        outputs = super().training_step(batch, batch_idx)
         xs_pred = outputs["xs_pred"]
         xs = outputs["xs"]
+        zs = outputs["zs"]
+        noised_xs = outputs["noised_xs"]
+        # # norm zs to [0,1], min max keep dim 0
+        # # norm zs to [0,1], min max keep dim 0
+        min_vals = zs.view(zs.shape[0], -1).min(dim=1, keepdim=True)[0].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        max_vals = zs.view(zs.shape[0], -1).max(dim=1, keepdim=True)[0].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        zs = (zs - min_vals) / (max_vals - min_vals + 1e-8)
+        zs = zs[:, :, :3, :, :]
+        # print('zs', zs.shape)
+        # print('zs mean', zs.mean((1,2,3,4)))
+        # print('zs std', zs.std((1,2,3,4)))
 
         # Calculate metrics
         self.metrics(xs_pred, xs)
-
+        print('xs', xs.shape)
+        print('xs_pred', xs_pred.shape)
+        print('noised_xs', noised_xs.shape)
+        print('zs', zs.shape)
         # log the video
         if self.logger:
-            log_video(
-                xs_pred,
-                xs,
+            log_multiple_videos(
+                [xs_pred, noised_xs, zs, xs],
                 step=None if namespace == "test" else self.global_step,
                 namespace=namespace + "_vis",
-                context_frames=self.context_frames,
+                context_frames=0,
                 logger=self.logger.experiment,
             )
+            
+
 
     def on_validation_epoch_end(self, namespace="validation") -> None:
         self.log_dict(

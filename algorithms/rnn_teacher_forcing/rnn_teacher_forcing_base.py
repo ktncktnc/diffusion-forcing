@@ -19,6 +19,7 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 from utils.logging_utils import get_validation_metrics_for_states
 from .models.diffusion_transition import DiffusionTransitionModel
+from utils.logging_utils import log_video
 
 
 class RNN_TeacherForcingBase(BasePytorchAlgo):
@@ -119,26 +120,30 @@ class RNN_TeacherForcingBase(BasePytorchAlgo):
         xs, conditions, masks, *_, init_z = self._preprocess_batch(batch)
 
         n_frames, batch_size, _, *_ = xs.shape
-
         xs_pred = [xs[0]] # using first frame as ground truth
+        zs = [init_z]
+        noised_xs = [xs[0]]
+
         loss = []
         z = init_z
         cum_snr = None
         for t in range(1, n_frames):
             deterministic_noise_level = None
 
-            z_next, x_next_pred, l, cum_snr = self.transition_model(
+            z_next, x_next_pred, l, cum_snr, noised_x_next = self.transition_model(
                 xs[t-1], z, t, xs[t], deterministic_noise_level, conditions[t], cum_snr=cum_snr
             )
 
             z = z_next
             xs_pred.append(x_next_pred)
+            noised_xs.append(noised_x_next)
+            zs.append(z_next)
             loss.append(l)
 
         xs_pred = torch.stack(xs_pred)
+        noised_xs = torch.stack(noised_xs)
+        zs = torch.stack(zs)
         loss = torch.stack(loss)
-        # print('loss', loss.mean())
-        # print('loss', loss.shape, masks[self.frame_stack:].shape)
 
         x_loss = self.reweigh_loss(loss, masks[self.frame_stack:])
         loss = x_loss
@@ -158,6 +163,8 @@ class RNN_TeacherForcingBase(BasePytorchAlgo):
             "loss": loss,
             "xs_pred": self._unnormalize_x(xs_pred),
             "xs": self._unnormalize_x(xs),
+            "zs": zs,
+            'noised_xs': self._unnormalize_x(noised_xs),
         }
 
         return output_dict
@@ -172,6 +179,7 @@ class RNN_TeacherForcingBase(BasePytorchAlgo):
 
         n_frames, batch_size, *_ = xs.shape
         xs_pred = [xs[0]]
+        zs = [init_z]
         xs_pred_all = []
         z = init_z
 
@@ -179,21 +187,56 @@ class RNN_TeacherForcingBase(BasePytorchAlgo):
         # use GT frame to generate hidden z, then use z to generate next frame
         n_context = self.context_frames // self.frame_stack
         for t in range(1, n_context):
-            z_next = self.transition_model(
+            t_tensor = torch.full((batch_size,), t, device=z.device).long()
+            z_next = self.transition_model.predict_z_next(
                 x=xs[t-1],
-                t=t,
-                z=z,
+                t=t_tensor,
+                z_cond=z,
                 external_cond=conditions[t],
             )
             x_next_pred, _ = self.transition_model.ddim_sample(
                 shape=xs[t].shape,
-                t=t,
+                t=t_tensor,
                 z_cond=z_next,
-                external_cond=conditions[t],
+                external_cond=conditions[t]
             )
-
             xs_pred.append(x_next_pred)
+            zs.append(z_next)
+
+            # if t == 1:
+            #     all_noised_xs = []
+            #     xs_noised = []
+            #     for j in np.linspace(0, self.cfg.diffusion.timesteps - 1, 100):
+            #         t_tensor = torch.full((batch_size,), j, device=z.device).long()
+            #         # _, x_next_pred, l, cum_snr = self.transition_model(
+            #         #     xs[t-1], z, t, xs[t], j, conditions[t], cum_snr=None
+            #         # )
+            #         x_noised = self.transition_model.q_sample(xs[t-1], t_tensor)
+            #         preds = self.transition_model.predict_diffusion_target(x_noised, t_tensor, z_next)
+            #         # all_noised_xs.append(preds)
+            #         xs_noised.append(x_noised)
+            #         all_noised_xs.append(preds.pred_noise)
+
+            #     xs_noised = torch.stack(xs_noised)
+            #     all_noised_xs = torch.stack(all_noised_xs)
+
+            #     xs_noised = rearrange(xs_noised, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+            #     all_noised_xs = rearrange(all_noised_xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+
+            #     xs_noised = self._unnormalize_x(xs_noised)
+            #     all_noised_xs = self._unnormalize_x(all_noised_xs)
+
+            #     log_video(
+            #         all_noised_xs,
+            #         xs_noised,
+            #         step=None if namespace == "test" else self.global_step,
+            #         namespace=f"{namespace}_reverse_process_vis",
+            #         context_frames=0,
+            #         logger=self.logger.experiment,
+            #     )
+
             z = z_next
+
 
         # prediction
         # x = x_next_pred
@@ -220,10 +263,12 @@ class RNN_TeacherForcingBase(BasePytorchAlgo):
             # )
 
             xs_pred.append(x_next)
+            zs.append(z_next)
             z = z_next
             t += 1
 
         xs_pred = torch.stack(xs_pred)
+        zs = torch.stack(zs)
         loss = F.mse_loss(xs_pred, xs, reduction="none")
         loss = self.reweigh_loss(loss, masks)
 
@@ -262,6 +307,7 @@ class RNN_TeacherForcingBase(BasePytorchAlgo):
             "loss": loss,
             "xs_pred": xs_pred,
             "xs": xs,
+            "zs": zs,
         }
 
     def on_validation_epoch_end(self, namespace="validation"):

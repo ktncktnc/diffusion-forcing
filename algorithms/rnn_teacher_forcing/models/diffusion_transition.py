@@ -63,9 +63,9 @@ class DiffusionTransitionModel(nn.Module):
 
             self.denoising_network = DenoisingNetworkWrapper(
                 x_channel=x_channel,
-                hidden_channel=32,
+                hidden_channel=8,
                 z_channel=z_channel,
-                num_blocks=3,
+                num_blocks=1,
             )
 
         elif len(self.x_shape) == 1:
@@ -216,7 +216,7 @@ class DiffusionTransitionModel(nn.Module):
         # get noised version of x_next
         noise = torch.randn_like(x_next)
         noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
-        noised_x_next = self.q_sample(x_start=x_next, t=t, noise=noise)
+        noised_x_next = self.q_sample(x_start=x_next, noise_level=noise_level, noise=noise)
 
         x_self_cond = None
         if self.self_condition and random() < 0.5:
@@ -283,7 +283,7 @@ class DiffusionTransitionModel(nn.Module):
 
         loss = loss * loss_weight
 
-        return z_next_pred, x_next_pred, loss, cum_snr_next
+        return z_next_pred, x_next_pred, loss, None, noised_x_next
 
     def predict_start_from_noise(self, x_t, t, noise):
         return (
@@ -352,13 +352,17 @@ class DiffusionTransitionModel(nn.Module):
 
     # @torch.no_grad()
     def p_sample(self, x, noise_level, z_cond):
-        b, *_, device = *x.shape, x.device
+        b = x.shape[0]
+        device = x.device
         batched_times = torch.full((b,), noise_level, device=x.device, dtype=torch.long)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
             x, batched_times, z_cond
         )
-        noise = torch.randn_like(x) if noise_level > 0 else 0.0  # no noise if t == 0
-        noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
+        if noise_level > 0:
+            noise = torch.randn_like(x) # no noise if t == 0
+            noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
+        else:
+            noise = 0.0 
         pred_x = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_x, x_start
 
@@ -371,7 +375,7 @@ class DiffusionTransitionModel(nn.Module):
         xs = [x]
 
         for noise_level in reversed(range(0, self.num_timesteps)):
-            x = self.p_sample(x, noise_level, z_cond)
+            x, _ = self.p_sample(x, noise_level, z_cond)
             xs.append(x)
 
         pred_z = self.predict_z_next(x, t=t, z_cond=z_cond, external_cond=external_cond)
@@ -433,13 +437,13 @@ class DiffusionTransitionModel(nn.Module):
 
         return ret, pred_z
 
-    def q_sample(self, x_start, t, noise=None):
+    def q_sample(self, x_start, noise_level, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
 
         return (
-            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+            extract(self.sqrt_alphas_cumprod, noise_level, x_start.shape) * x_start
+            + extract(self.sqrt_one_minus_alphas_cumprod, noise_level, x_start.shape) * noise
         )
 
     # def ddim_sample_step(

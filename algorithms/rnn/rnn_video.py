@@ -12,7 +12,6 @@ from utils.logging_utils import log_video
 
 class RNNVideo(RNNBase):
     def __init__(self, cfg: DictConfig):
-        self.metrics = cfg.metrics
         super().__init__(cfg)
 
     def _build_model(self):
@@ -28,14 +27,14 @@ class RNNVideo(RNNBase):
         #     self.visualize_noise(batch)
 
         output_dict = super().training_step(batch, batch_idx)
-        if batch_idx % 1000 == 0:
+        if batch_idx % 2500 == 0:
             if self.logger is not None:
                 log_video(
                     output_dict["xs_pred"],
                     output_dict["xs"],
                     step=self.global_step,
                     namespace="training_vis",
-                    logger=self.logger.experiment,
+                    logger=self.logger.experiment
                 )
         return output_dict
     
@@ -58,7 +57,7 @@ class RNNVideo(RNNBase):
                 xs,
                 step=None if namespace == "test" else self.global_step,
                 namespace=namespace + "_vis",
-                context_frames=self.context_frames,
+                context_frames=0,
                 logger=self.logger.experiment,
             )
 
@@ -79,34 +78,6 @@ class RNNVideo(RNNBase):
 
     def on_test_epoch_end(self) -> None:
         self.on_validation_epoch_end(namespace="test")
-
-    def visualize_noise(self, batch):
-        self.log_dict({"pixel_mean": torch.mean(batch[0]), "pixel_std": torch.std(batch[0])})
-
-        xs = self._preprocess_batch(batch)[0]
-
-        xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
-        batch_size = xs.shape[1]
-        x = xs[0]
-        xs = []
-        xs_noised = []
-        for t in np.linspace(0, self.cfg.diffusion.timesteps - 1, 100):
-            xs.append(x)
-            t = torch.Tensor([int(t)] * batch_size).long().to(x.device)
-            x = self.transition_model.q_sample(x, t)
-            xs_noised.append(x)
-
-        xs = self._unnormalize_x(torch.stack(xs))
-        xs_noised = self._unnormalize_x(torch.stack(xs_noised))
-
-        log_video(
-            xs_noised,
-            xs,
-            step=self.global_step,
-            namespace="noise_visualization",
-            context_frames=0,
-            logger=self.logger.experiment,
-        )
 
     def load_state_dict(self, state_dict, strict = True, assign = False):
         return super().load_state_dict(state_dict, False, assign)

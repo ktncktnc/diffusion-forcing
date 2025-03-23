@@ -57,7 +57,7 @@ class RNNUNet(nn.Module):
         else:
             raise ValueError(f"x_shape must have 1 or 3 dims but got shape {self.x_shape}")
 
-    def forward(self, x, x_next, t, z_cond, external_cond=None, x_self_cond=None):
+    def forward(self, x, t, z_cond, x_next, external_cond=None):
         """
         Forward pass for the RNN UNet model.
         
@@ -71,7 +71,7 @@ class RNNUNet(nn.Module):
         Returns:
             ModelPrediction containing predicted next state (pred_x) and next latent state (pred_z)
         """
-        pred = self.model_predictions(x, t, z_cond, external_cond, x_self_cond)
+        pred = self.model_predictions(x, t, z_cond, external_cond)
         pred_x = pred.pred_x
         pred_z = pred.pred_z
         if x_next is not None:
