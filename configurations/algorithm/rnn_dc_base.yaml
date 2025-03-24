@@ -31,6 +31,8 @@ diffusion:
   network_size: 32
   beta_schedule: cosine
   objective: pred_x0
+  noise_level_sampling: random
+  max_noise_level_gap: 10
   patch_size: 2
   hidden_size: 144
   num_heads: 8

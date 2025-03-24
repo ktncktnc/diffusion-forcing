@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Any
-from einops import rearrange
+from einops import rearrange, repeat
 
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 
@@ -259,18 +259,18 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         #     org_xs_pred.append(x_next_pred)
         # z = init_z
         t = n_context
-        
         # prediction
         while len(xs_pred) < n_frames - n_context:
-            generation_chunk_size = min(self.correction_size, n_frames - len(xs_pred))
-            ts = [t + i for i in range(generation_chunk_size)]
+            chunk_size = min(self.correction_size, n_frames - len(xs_pred))
+            sampling_steps = self.create_sampling_noise_levels(self.sampling_timesteps, chunk_size)
+            ts = [t + i for i in range(chunk_size)]
 
             # timestep first, not include the first input frame and init_z
             chunk_org_xs_pred, chunk_zs = self.original_algo.rollout(
                 first_x=xs_pred[-1], # (b, (fs c), h, w)
                 init_z=z, # (b, c_z, z_dim, z_dim)
                 ts=ts,
-                conditions=conditions[t:t + generation_chunk_size],
+                conditions=conditions[t:t + chunk_size],
             )
 
             # get last z and remove it from chunk_zs
@@ -280,24 +280,22 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             # batch first, reshape for diffusion model
             chunk_org_xs_pred = rearrange(chunk_org_xs_pred, "t b ... -> b t ...")
             # get residuals from diffusion
-            # TODO: generate t 
-            pred_target = self.transition_model.ddim_sample(
-                chunk_org_xs_pred.shape, # (b, t, (fs c), h, w)
-                z_cond=rearrange(chunk_zs, 't b ... -> b t ...'), # (b, t, c_z, z_dim, z_dim)
-                external_cond=conditions[t:t + generation_chunk_size],
-                return_all_timesteps=return_all_timesteps
-            )
-             # (b, t, (fs c), h, w)
-            if return_all_timesteps:
-                all_xs = pred_target
-                pred_target = pred_target[-1]
-                all_xs = torch.stack(all_xs, dim=2) # (b, t, timesteps, (fs c), h, w)
-                all_xs_pred.extend(all_xs.unbind(dim=1)) # (t, b, timesteps, (fs c), h, w)
+            chunk_x_t = torch.randn((batch_size, chunk_size) + tuple(self.x_stacked_shape)).to(xs.device)
+
+            for m in range(sampling_steps.shape[0]):
+                current_steps = sampling_steps[m]
+
+                chunk_x_t = self.transition_model.ddim_sample_step(
+                    chunk_x_t, # (b, t, (fs c), h, w)
+                    z_cond=rearrange(chunk_zs, 't b ... -> b t ...'),
+                    index=current_steps,
+                    external_cond=conditions[t:t + chunk_size]
+                )[0]
             
             if self.cfg.target_type == "diff":
-                chunk_xs_pred = pred_target + chunk_org_xs_pred # (b, t, (fs c), h, w)
+                chunk_xs_pred = chunk_x_t + chunk_org_xs_pred # (b, t, (fs c), h, w)
             elif self.cfg.target_type == "data":
-                chunk_xs_pred = pred_target
+                chunk_xs_pred = chunk_x_t
             else:
                 raise ValueError("Invalid target_type")
             
@@ -305,7 +303,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             xs_pred.extend(chunk_xs_pred.unbind(dim=1))
             # all_xs_pred += xs_pred
 
-            t += generation_chunk_size
+            t += chunk_size
 
             # TODO: do we need to feed new pred into transition model again to get posterior z_chunk? 
 
@@ -390,3 +388,19 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         mean = self.data_mean.reshape(shape).to(xs.device)
         std = self.data_std.reshape(shape).to(xs.device)
         return xs * std + mean
+
+    def create_sampling_noise_levels(self, sampling_timesteps, n_frames):  
+        if self.cfg.diffusion.noise_level_sampling == "linear_increasing":
+            pyramid_height = sampling_timesteps + n_frames - 1
+            pyramid = np.zeros((pyramid_height, n_frames), dtype=int)
+            for m in range(pyramid_height):
+                for t in range(n_frames):
+                    pyramid[m, t] = m - t
+            pyramid = np.clip(pyramid, a_min=0, a_max=sampling_timesteps-1, dtype=int)
+            return pyramid
+        elif self.cfg.diffusion.noise_level_sampling in ['random', 'constant']:
+            noise_levels = torch.arange(0, sampling_timesteps, dtype=torch.long)
+            return repeat(noise_levels, 't -> t f', f=n_frames)
+        else:
+            raise ValueError("Invalid noise_level_sampling")
+

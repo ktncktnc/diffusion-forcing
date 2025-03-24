@@ -1,5 +1,5 @@
 from typing import Optional, Tuple, Union
-
+import numpy as np
 from random import random, randint
 from collections import namedtuple
 from einops import repeat
@@ -299,22 +299,22 @@ class DiffusionCorrectionransitionModel(nn.Module):
     def p_mean_variance(self, x, t, z_cond, external_cond=None, x_self_cond=None):
         model_pred = self.model_predictions(x, t, z_cond, external_cond=external_cond, x_self_cond=x_self_cond)
         x_start = model_pred.pred_x_start
-        pred_z = model_pred.pred_z
+        # pred_z = model_pred.pred_z
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_start, x_t=x, t=t)
-        return model_mean, posterior_variance, posterior_log_variance, x_start, pred_z
+        return model_mean, posterior_variance, posterior_log_variance, x_start
 
     # @torch.no_grad()
     def p_sample(self, x, t, z_cond, external_cond=None, x_self_cond=None):
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((b,), t, device=x.device, dtype=torch.long)
-        model_mean, _, model_log_variance, x_start, pred_z = self.p_mean_variance(
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(
             x, batched_times, z_cond, external_cond=external_cond, x_self_cond=x_self_cond
         )
         noise = torch.randn_like(x) if t > 0 else 0.0  # no noise if t == 0
         noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
         pred_x = model_mean + (0.5 * model_log_variance).exp() * noise
-        return pred_x, x_start, pred_z
+        return pred_x, x_start
 
     # @torch.no_grad()
     def p_sample_loop(self, shape, z_cond, external_cond=None, return_all_timesteps=False):
@@ -328,12 +328,12 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
         for t in reversed(range(0, self.num_timesteps)):
             self_cond = x_start if self.self_condition else None
-            x, x_start, pred_z = self.p_sample(x, t, z_cond, external_cond, x_self_cond=self_cond)
+            x, x_start = self.p_sample(x, t, z_cond, external_cond, x_self_cond=self_cond)
             xs.append(x)
 
         ret = x if not return_all_timesteps else xs
 
-        return ret, pred_z
+        return ret
 
     # @torch.no_grad()
     def ddim_sample(self, shape, z_cond, external_cond=None, return_all_timesteps=False):
@@ -358,14 +358,14 @@ class DiffusionCorrectionransitionModel(nn.Module):
         x_start = None
 
         for time, time_next in time_pairs:
-            # print(time, time_next)
-            time_cond = torch.full((batch,timesteps), time, device=device, dtype=torch.long)
+            print(time, time_next)
+            time_cond = torch.full((batch, timesteps), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             #TODO: edit here, no return z
             model_pred = self.model_predictions(
                 x, z_cond, time_cond, external_cond=external_cond, x_self_cond=self_cond
             )
-            pred_noise, x_start, _ = model_pred
+            pred_noise, x_start = model_pred
 
             if time_next < 0:
                 x = x_start
@@ -399,13 +399,21 @@ class DiffusionCorrectionransitionModel(nn.Module):
         )
 
     def ddim_sample_step(
-        self, x, z_cond, external_cond=None, index=0, return_x_start=False, return_guidance_const=False
+        self, 
+        x, # (B, T, C, H, W)
+        z_cond, # (B, T, Z, H, W)
+        index: np.ndarray, # (T) 
+        external_cond=None, 
+        return_x_start=False, 
+        return_guidance_const=False
     ):
-        if index == 0:
-            x = torch.clamp(x, -self.clip_noise, self.clip_noise)
+        # clamp noise where x is pure noise
+        mask = (torch.tensor(index) == 0).view(1, -1, *(1,)*(x.dim()-2)).to(x.device)
+        x = torch.where(mask, torch.clamp(x, -self.clip_noise, self.clip_noise), x)
 
-        batch, device, total_timesteps, sampling_timesteps, eta = (
+        batch, n_frames, device, total_timesteps, sampling_timesteps, eta = (
             x.shape[0],
+            x.shape[1],
             self.betas.device,
             self.num_timesteps,
             self.sampling_timesteps,
@@ -415,34 +423,45 @@ class DiffusionCorrectionransitionModel(nn.Module):
         # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
         times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)
         times = list(reversed(times.int().tolist()))
-        time_pairs = list(zip(times[:-1], times[1:]))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+        time_pairs = np.array(list(zip(times[:-1], times[1:])))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
 
         x = x.to(device)
 
-        time, time_next = time_pairs[index]
-        time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
-        self_cond = None
-        model_pred = self.model_predictions(x, z_cond, time_cond, external_cond=external_cond, x_self_cond=self_cond)
+        time, time_next = [v for v in time_pairs[index].T]
+        if isinstance(time, int):
+            time_cond = torch.full((batch, n_frames), time, device=device, dtype=torch.long)
+        else:
+            time_cond = torch.tensor(time, device=device, dtype=torch.long)
+            time_cond = repeat(time_cond, 't -> b t', b=batch)
+
+        model_pred = self.model_predictions(x, z_cond, time_cond, external_cond=external_cond)
         pred_noise = model_pred.pred_noise
         x_start = model_pred.pred_x_start
-        pred_z = model_pred.pred_z
 
         guidance_scale = 0
-        if time_next < 0:
-            x = x_start
-        else:
-            alpha = self.alphas_cumprod[time]
-            alpha_next = self.alphas_cumprod[time_next]
+        alpha = self.alphas_cumprod[time]
+        alpha_next = self.alphas_cumprod[time_next]
 
-            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
-            c = (1 - alpha_next - sigma**2).sqrt()
-            guidance_scale = (1 - alpha) - c * (1 - alpha).sqrt()
+        # Eta = 0 => Deterministic sampling
+        # Eta = 1 => DDPM
+        sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+        c = (1 - alpha_next - sigma**2).sqrt()
+        guidance_scale = (1 - alpha) - c * (1 - alpha).sqrt()  # (t)
 
-            noise = torch.randn_like(x)
-            noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
+        noise = torch.randn_like(x)
+        noise = torch.clamp(noise, -self.clip_noise, self.clip_noise)
 
-            x = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
-        result = [x, pred_z]
+        # For broadcasting multiply
+        alpha_next = alpha_next.view(1, -1, *(1,)*(x_start.dim()-2))
+        c = c.view(1, -1, *(1,)*(x_start.dim()-2))
+        sigma = sigma.view(1, -1, *(1,)*(x_start.dim()-2))
+
+        x_tm1 = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+
+        mask = (torch.tensor(time_next) == 0).view(1, -1, *(1,)*(x.dim()-2)).to(x.device)
+        x = torch.where(mask, x_start, x_tm1)
+
+        result = [x]
         if return_x_start:
             result.append(x_start)
         if return_guidance_const:
