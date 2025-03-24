@@ -42,13 +42,14 @@ class RNNVideo(RNNBase):
         if self.cfg.evaluation.seed is not None:
             self.generator = torch.Generator(device=self.device).manual_seed(self.cfg.evaluation.seed)
 
-    def validation_step(self, batch, batch_idx, namespace="validation", is_log_video=True):
-        outputs = super().validation_step(batch, batch_idx, namespace)
+    def validation_step(self, batch, batch_idx, namespace="validation", is_log_video=True, cal_metrics=True, use_groundtruth=False):
+        outputs = super().validation_step(batch, batch_idx, namespace, use_groundtruth)
         xs_pred = outputs["xs_pred"]
         xs = outputs["xs"]
 
         # Calculate metrics
-        self.metrics(xs_pred, xs)
+        if cal_metrics:
+            self.metrics(xs_pred, xs)
 
         # log the video
         if is_log_video and self.logger:

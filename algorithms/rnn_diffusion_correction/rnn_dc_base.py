@@ -19,6 +19,7 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 from algorithms.common.base_pytorch_algo import BasePytorchAlgo
 from utils.logging_utils import get_validation_metrics_for_states
 from .models.diffusion_transition import DiffusionCorrectionransitionModel
+from .models.anneal_prob import CosineAnnealProb
 
 
 class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
@@ -26,24 +27,23 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         self.cfg = cfg
         self.x_shape = cfg.x_shape
         self.z_shape = cfg.z_shape
+
         self.frame_stack = cfg.frame_stack
+        self.context_frames = cfg.context_frames  # number of context frames at validation time
+        self.external_cond_dim = cfg.external_cond_dim
+        self.sampling_timesteps = cfg.diffusion.sampling_timesteps
+        self.correction_size = cfg.correction_size
+        self.finetune_org_model = cfg.finetune_org_model
+        self.anneal_groundtruth_rollout_cfg = cfg.anneal_groundtruth_rollout
+
         self.cfg.diffusion.cum_snr_decay = self.cfg.diffusion.cum_snr_decay**self.frame_stack
         self.x_stacked_shape = list(cfg.x_shape)
         self.x_stacked_shape[0] *= cfg.frame_stack
-        self.is_spatial = len(self.x_stacked_shape) == 3  # pixel
-        self.gt_cond_prob = cfg.gt_cond_prob  # probability to condition one-step diffusion o_t+1 on ground truth o_t
-        self.gt_first_frame = cfg.gt_first_frame
-        self.context_frames = cfg.context_frames  # number of context frames at validation time
-        self.chunk_size = cfg.chunk_size
-        self.calc_crps_sum = cfg.calc_crps_sum
-        self.external_cond_dim = cfg.external_cond_dim
-        self.uncertainty_scale = cfg.uncertainty_scale
-        self.sampling_timesteps = cfg.diffusion.sampling_timesteps
-        self.validation_step_outputs = []
-        self.min_crps_sum = float("inf")
-        self.correction_size = cfg.correction_size
 
-        self.finetune_org_model = cfg.finetune_org_model
+        self.is_spatial = len(self.x_stacked_shape) == 3  # pixel
+        self.calc_crps_sum = cfg.calc_crps_sum
+        self.min_crps_sum = float("inf")
+        del original_algo.metrics
 
         super().__init__(cfg)
         self.original_algo = original_algo
@@ -60,6 +60,11 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             self.x_stacked_shape, self.z_shape, self.external_cond_dim, self.cfg.diffusion, self.cfg.backbone
         )
         self.register_data_mean_std(self.cfg.data_mean, self.cfg.data_std)
+
+        if self.anneal_groundtruth_rollout_cfg is not None:
+            self.gt_rollout_prob = CosineAnnealProb(**self.anneal_groundtruth_rollout_cfg)
+        else:
+            self.gt_rollout_prob = None
 
     def configure_optimizers(self):
         transition_params = list(self.transition_model.parameters())
@@ -96,7 +101,11 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             Processed tensors for model input in shape (b, t, (fs c), h, w)
         """
         if get_zs:
-            outputs = self.original_algo.validation_step(batch, 0, is_log_video=False)
+            use_groundtruth = False
+            if self.gt_rollout_prob is not None:
+                use_groundtruth = random() < self.gt_rollout_prob(self.trainer.global_step)
+                
+            outputs = self.original_algo.validation_step(batch, 0, is_log_video=False, use_groundtruth=use_groundtruth, cal_metrics=False)
             xs = outputs["xs"]
             pred_xs = outputs["xs_pred"]
             zs = outputs["zs"]
@@ -262,7 +271,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         # prediction
         while len(xs_pred) < n_frames - n_context:
             chunk_size = min(self.correction_size, n_frames - len(xs_pred))
-            sampling_steps = self.create_sampling_noise_levels(self.sampling_timesteps, chunk_size)
+            sampling_steps_matrix = self.create_sampling_noise_levels(self.sampling_timesteps, chunk_size)
             ts = [t + i for i in range(chunk_size)]
 
             # timestep first, not include the first input frame and init_z
@@ -282,9 +291,8 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             # get residuals from diffusion
             chunk_x_t = torch.randn((batch_size, chunk_size) + tuple(self.x_stacked_shape)).to(xs.device)
 
-            for m in range(sampling_steps.shape[0]):
-                current_steps = sampling_steps[m]
-
+            for m in range(sampling_steps_matrix.shape[0]):
+                current_steps = sampling_steps_matrix[m]
                 chunk_x_t = self.transition_model.ddim_sample_step(
                     chunk_x_t, # (b, t, (fs c), h, w)
                     z_cond=rearrange(chunk_zs, 't b ... -> b t ...'),

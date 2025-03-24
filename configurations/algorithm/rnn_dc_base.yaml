@@ -17,21 +17,21 @@ target_type: data
 correction_size: 8
 weight_decay: 1e-4
 warmup_steps: 2000
-gt_first_frame: 0.0
-gt_cond_prob: 0.0 # setting this to 1 will give you teacher forcing + single frame diffusion
-uncertainty_scale: 1
-chunk_size: 1 # -1 for full trajectory diffusion, number to specify diffusion chunk size
 calc_crps_sum: 100 # generate multiple samples for computing crps_sum
 learnable_init_z: False
 optimizer_beta: [0.9, 0.999]
-
 finetune_org_model: False
+
+anneal_groundtruth_rollout:
+  initial_prob: 1.0
+  min_prob: 0.0
+  anneal_steps: 15000
 
 diffusion:
   network_size: 32
   beta_schedule: cosine
   objective: pred_x0
-  noise_level_sampling: random
+  noise_level_sampling: linear_increasing
   max_noise_level_gap: 10
   patch_size: 2
   hidden_size: 144

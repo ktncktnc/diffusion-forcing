@@ -358,7 +358,6 @@ class DiffusionCorrectionransitionModel(nn.Module):
         x_start = None
 
         for time, time_next in time_pairs:
-            print(time, time_next)
             time_cond = torch.full((batch, timesteps), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             #TODO: edit here, no return z
@@ -410,6 +409,8 @@ class DiffusionCorrectionransitionModel(nn.Module):
         # clamp noise where x is pure noise
         mask = (torch.tensor(index) == 0).view(1, -1, *(1,)*(x.dim()-2)).to(x.device)
         x = torch.where(mask, torch.clamp(x, -self.clip_noise, self.clip_noise), x)
+        # if index == 0:
+        #     x = torch.clamp(x, -self.clip_noise, self.clip_noise)
 
         batch, n_frames, device, total_timesteps, sampling_timesteps, eta = (
             x.shape[0],
@@ -428,7 +429,9 @@ class DiffusionCorrectionransitionModel(nn.Module):
         x = x.to(device)
 
         time, time_next = [v for v in time_pairs[index].T]
-        if isinstance(time, int):
+        # time, time_next = time_pairs[index]
+        # print('time', time, 'time_next', time_next)
+        if type(time) in [int, float, np.int64]:
             time_cond = torch.full((batch, n_frames), time, device=device, dtype=torch.long)
         else:
             time_cond = torch.tensor(time, device=device, dtype=torch.long)
@@ -458,7 +461,7 @@ class DiffusionCorrectionransitionModel(nn.Module):
 
         x_tm1 = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
-        mask = (torch.tensor(time_next) == 0).view(1, -1, *(1,)*(x.dim()-2)).to(x.device)
+        mask = (torch.tensor(time_next) < 0).view(1, -1, *(1,)*(x.dim()-2)).to(x.device)
         x = torch.where(mask, x_start, x_tm1)
 
         result = [x]
@@ -473,8 +476,8 @@ class DiffusionCorrectionransitionModel(nn.Module):
             return torch.randint(0, self.num_timesteps, (b,t), device=device).long()
         elif self.noise_level_sampling == "linear_increasing":
             first_noise_level = randint(0, self.num_timesteps - 1)
-            noise_level_gap = randint(1, self.max_noise_level_gap)
-            noise_levels = torch.clamp(torch.arange(first_noise_level, first_noise_level + (t-1)*noise_level_gap, noise_level_gap, device=device), 0, self.num_timesteps-1)
+            noise_level_gap = randint(1, self.max_noise_level_gap+1)
+            noise_levels = torch.clamp(torch.arange(first_noise_level, first_noise_level + t*noise_level_gap, noise_level_gap, device=device), 0, self.num_timesteps-1)
             return repeat(noise_levels, 't -> b t', b=b).long()
         elif self.noise_level_sampling == "constant":
             noise_level = randint(0, self.num_timesteps - 1)

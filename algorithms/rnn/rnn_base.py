@@ -277,7 +277,7 @@ class RNNBase(BasePytorchAlgo):
         return output_dict
 
     @torch.no_grad()
-    def validation_step(self, batch, batch_idx, namespace="validation"):
+    def validation_step(self, batch, batch_idx, namespace="validation", use_groundtruth=False):
         """
         Generate n-1 next frames given the first frame.
         """
@@ -297,7 +297,7 @@ class RNNBase(BasePytorchAlgo):
         # context
         n_context = self.context_frames // self.frame_stack
         for t in range(1, n_context):
-            x_next_pred, z = self.roll_1_step(xs[t], t, z, conditions[t])
+            x_next_pred, z = self.roll_1_step(xs[t-1], t, z, conditions[t])
             xs_pred.append(x_next_pred)
             zs.append(z)
 
@@ -305,7 +305,7 @@ class RNNBase(BasePytorchAlgo):
         # prediction
         while len(xs_pred) < n_frames:
             x_next, z_next, _ = self.transition_model(
-                x=xs_pred[-1],
+                x=xs_pred[-1] if not use_groundtruth else xs[t-1],
                 t=t,
                 z_cond=z,
                 x_next=None,
