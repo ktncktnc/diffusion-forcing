@@ -19,5 +19,5 @@ conda activate df
 # Navigate to directory and run script
 cd /scratch/s224075134/temporal_diffusion/diffusion-forcing/
 
-python -m main +name=test algorithm=df_video experiment=exp_video dataset=video_minecraft experiment.training.batch_size=16 algorithm.frame_stack=8 dataset.context_length=8 dataset.frame_skip=1 dataset.n_frames=72 algorithm.diffusion.network_size=64 algorithm.diffusion.beta_schedule=sigmoid algorithm.diffusion.cum_snr_decay=0.96 algorithm.z_shape=[32,128,128]
+python -m main +name=test algorithm=rnn_df_video experiment=exp_video dataset=video_minecraft experiment.training.batch_size=16 algorithm.frame_stack=8 dataset.context_length=8 dataset.frame_skip=1 dataset.n_frames=72 algorithm.diffusion.network_size=64 algorithm.diffusion.beta_schedule=sigmoid algorithm.diffusion.cum_snr_decay=0.96 algorithm.z_shape=[32,128,128]
 

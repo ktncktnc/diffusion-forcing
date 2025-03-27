@@ -27,15 +27,14 @@ class RNNVideo(RNNBase):
         #     self.visualize_noise(batch)
 
         output_dict = super().training_step(batch, batch_idx)
-        if batch_idx % 2500 == 0:
-            if self.logger is not None:
-                log_video(
-                    output_dict["xs_pred"],
-                    output_dict["xs"],
-                    step=self.global_step,
-                    namespace="training_vis",
-                    logger=self.logger.experiment
-                )
+        if self.logger is not None and ((batch_idx < 15000 and batch_idx % 2500 == 0) or (batch_idx >= 15000 and batch_idx % 10000 == 0)):
+            log_video(
+                output_dict["xs_pred"],
+                output_dict["xs"],
+                step=self.global_step,
+                namespace="training_vis",
+                logger=self.logger.experiment
+            )
         return output_dict
     
     def on_validation_epoch_start(self) -> None:

@@ -6,7 +6,7 @@
 #SBATCH --qos=batch-short
 #SBATCH --job-name=df_dmlab
 #SBATCH --output=./logs/df_dmlab.out
-#BATCH --error=./logs/error/df_dmlab.err
+#SBATCH --error=./logs/error/df_dmlab.err
 #SBATCH --time=72:00:00
 
 # Initialize conda first

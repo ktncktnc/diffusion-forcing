@@ -52,7 +52,9 @@ def log_video(
         logger = wandb
     if observation_2 is None:
         observation_2 = torch.zeros_like(observation_1)
-    observation_1[:context_frames] = observation_2[:context_frames]
+    
+    if context_frames > 0:
+        observation_1[:context_frames] = observation_2[:context_frames]
     
     # Add red border of 1 pixel width to the context frames
     if add_red_border:

@@ -144,9 +144,9 @@ class RNNBase(BasePytorchAlgo):
 
         return loss.mean()
 
-    def rollout(self, first_x, init_z, ts, conditions):
+    def rollout(self, first_x, init_z, ts, conditions, groundtruth_xs=None):
         """
-        Rollout the model for n_frames.
+        Rollout the model for n_frames. Using groundtruth_xs if provided.
         
         Args:
             xs (Tensor): Initial frames [n_frames, batch_size, ...]
@@ -166,7 +166,7 @@ class RNNBase(BasePytorchAlgo):
 
         for i, t in enumerate(ts):
             x_next, z_next = self.roll_1_step(
-                x=x,
+                x=x if groundtruth_xs is None else groundtruth_xs[i],
                 t=t,
                 z=z,
                 condition=conditions[i]

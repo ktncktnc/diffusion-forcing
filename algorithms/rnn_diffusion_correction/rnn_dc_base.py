@@ -35,6 +35,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
         self.correction_size = cfg.correction_size
         self.finetune_org_model = cfg.finetune_org_model
         self.anneal_groundtruth_rollout_cfg = cfg.anneal_groundtruth_rollout
+        self.posterior_rolling = cfg.get("posterior_rolling", False)
 
         self.cfg.diffusion.cum_snr_decay = self.cfg.diffusion.cum_snr_decay**self.frame_stack
         self.x_stacked_shape = list(cfg.x_shape)
@@ -251,6 +252,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
         n_frames, batch_size, *_ = xs.shape
         xs_pred = [xs[0]] # (t, b, (fs c), h, w)
+        xs_pred_wo_z = [xs[0]]
         all_xs_pred = [] # (t, b, (fs c), h, w)
         org_xs_pred = [xs[0]] # (t, b, (fs c), h, w)
 
@@ -283,13 +285,13 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             )
 
             # get last z and remove it from chunk_zs
-            z = chunk_zs[-1]
             org_xs_pred.extend(chunk_org_xs_pred.unbind(dim=0))
 
             # batch first, reshape for diffusion model
             chunk_org_xs_pred = rearrange(chunk_org_xs_pred, "t b ... -> b t ...")
             # get residuals from diffusion
             chunk_x_t = torch.randn((batch_size, chunk_size) + tuple(self.x_stacked_shape)).to(xs.device)
+            chunk_x_t_wo_z = chunk_x_t.clone()
 
             for m in range(sampling_steps_matrix.shape[0]):
                 current_steps = sampling_steps_matrix[m]
@@ -299,24 +301,46 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
                     index=current_steps,
                     external_cond=conditions[t:t + chunk_size]
                 )[0]
+                # chunk_x_t_wo_z = self.transition_model.ddim_sample_step(
+                #     chunk_x_t_wo_z, # (b, t, (fs c), h, w)
+                #     z_cond=torch.zeros_like(rearrange(chunk_zs, 't b ... -> b t ...')),
+                #     index=current_steps,
+                #     external_cond=conditions[t:t + chunk_size]
+                # )[0]
+
+
             
             if self.cfg.target_type == "diff":
                 chunk_xs_pred = chunk_x_t + chunk_org_xs_pred # (b, t, (fs c), h, w)
+                # chunk_xs_pred_wo_z = chunk_x_t_wo_z + chunk_org_xs_pred
             elif self.cfg.target_type == "data":
                 chunk_xs_pred = chunk_x_t
+                # chunk_xs_pred_wo_z = chunk_x_t_wo_z
             else:
                 raise ValueError("Invalid target_type")
             
             # timestep first
             xs_pred.extend(chunk_xs_pred.unbind(dim=1))
+            # xs_pred_wo_z.extend(chunk_xs_pred_wo_z.unbind(dim=1))
             # all_xs_pred += xs_pred
 
-            t += chunk_size
 
+            if self.posterior_rolling:
+                chunk_org_xs_pred, chunk_zs = self.original_algo.rollout(
+                    first_x=None, # (b, (fs c), h, w)
+                    init_z=z, # (b, c_z, z_dim, z_dim)
+                    ts=ts,
+                    conditions=conditions[t:t + chunk_size],
+                    groundtruth_xs=rearrange(chunk_xs_pred, 'b t ... -> t b ...')
+                )
             # TODO: do we need to feed new pred into transition model again to get posterior z_chunk? 
+            
+            t += chunk_size
+            z = chunk_zs[-1]
 
         # timestep first
         xs_pred = torch.stack(xs_pred)
+        # xs_pred_wo_z = torch.stack(xs_pred_wo_z)
         org_xs_pred = torch.stack(org_xs_pred)
 
         loss = F.mse_loss(xs_pred, xs, reduction="none")
@@ -327,10 +351,12 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
 
         xs = rearrange(xs, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         xs_pred = rearrange(xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
+        # xs_pred_wo_z = rearrange(xs_pred_wo_z, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
         org_xs_pred = rearrange(org_xs_pred, "t b (fs c) ... -> (t fs) b c ...", fs=self.frame_stack)
 
         xs = self._unnormalize_x(xs)
         xs_pred = self._unnormalize_x(xs_pred)
+        # xs_pred_wo_z = self._unnormalize_x(xs_pred_wo_z)
         org_xs_pred = self._unnormalize_x(org_xs_pred)
 
         if not self.is_spatial:
@@ -381,6 +407,7 @@ class RNN_DiffusionCorrectionBase(BasePytorchAlgo):
             return {
                 "loss": loss,
                 "xs_pred": xs_pred,
+                # 'xs_pred_wo_z': xs_pred_wo_z,
                 "org_xs_pred": org_xs_pred,
                 "xs": xs,
             }
